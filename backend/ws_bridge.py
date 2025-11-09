@@ -12,10 +12,14 @@ import json
 import logging
 import os
 import traceback
+from functools import partial
 from typing import Any, Dict, Optional
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+try:  # websockets >= 10
+    from websockets.server import WebSocketServerProtocol
+except ImportError:  # Compatibility for older deployments
+    from websockets.legacy.server import WebSocketServerProtocol  # type: ignore
 
 from . import STORE_DIR
 from .vamp_store import VampStore, _uid
@@ -38,6 +42,24 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger("vamp.ws")
+
+try:
+    from .deepseek_client import ask_deepseek, analyze_feedback_with_deepseek
+except Exception as e:
+    logger.warning(f"DeepSeek client not available: {e}")
+    ask_deepseek = None  # type: ignore
+    analyze_feedback_with_deepseek = None  # type: ignore
+
+
+def _supports_structured_feedback(func: Optional[Any]) -> bool:
+    code = getattr(func, "__code__", None)
+    try:
+        return bool(code and getattr(code, "co_argcount", 0) >= 2)
+    except Exception:
+        return False
+
+
+HAS_STRUCTURED_FEEDBACK = _supports_structured_feedback(analyze_feedback_with_deepseek)
 
 # --- Helpers ---
 def ok(action: str, data: Any = None) -> str:
@@ -174,8 +196,67 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
 
 async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
     messages = msg.get("messages", [])
-    answer = f"[VAMP AI] Processed {len(messages)} messages."
+    question = "\n\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict)).strip()
+
+    answer = "[VAMP AI] No question received."
+
+    if question:
+        if ask_deepseek:
+            loop = asyncio.get_running_loop()
+            try:
+                response = await loop.run_in_executor(None, partial(ask_deepseek, question))
+                answer = response or "(AI returned an empty response)"
+            except Exception as e:
+                logger.warning(f"ask_deepseek failed: {e}")
+                answer = f"[VAMP AI] (fallback) {question}"
+        else:
+            answer = f"[VAMP AI] Received: {question}"
+
     await ws.send(ok("ASK", {"answer": answer}))
+
+
+async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
+    messages = msg.get("messages", [])
+    question = "\n\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict)).strip()
+
+    answer = "[VAMP Assessor] No feedback request received."
+
+    if question:
+        if analyze_feedback_with_deepseek and HAS_STRUCTURED_FEEDBACK:
+            loop = asyncio.get_running_loop()
+
+            def _call_feedback() -> str:
+                try:
+                    result = analyze_feedback_with_deepseek([], [question])  # type: ignore[arg-type]
+                except Exception as exc:
+                    raise exc
+
+                if isinstance(result, dict):
+                    answers = result.get("answers") or []
+                    if answers:
+                        first = answers[0]
+                        summary = str(first.get("summary", "")).strip()
+                        verdict = str(first.get("verdict", "")).strip()
+                        verdict_part = f" Verdict: {verdict}." if verdict else ""
+                        return (summary or "(No summary provided)") + verdict_part
+                return "(AI returned no structured feedback)"
+
+            try:
+                answer = await loop.run_in_executor(None, _call_feedback)
+            except Exception as e:
+                logger.warning(f"analyze_feedback_with_deepseek failed: {e}")
+                answer = f"[VAMP Assessor] (fallback) {question}"
+        elif ask_deepseek:
+            loop = asyncio.get_running_loop()
+            try:
+                answer = await loop.run_in_executor(None, partial(ask_deepseek, question))
+            except Exception as e:
+                logger.warning(f"ask_deepseek feedback fallback failed: {e}")
+                answer = f"[VAMP Assessor] (fallback) {question}"
+        else:
+            answer = f"[VAMP Assessor] Received: {question}"
+
+    await ws.send(ok("ASK_FEEDBACK", {"answer": answer}))
 
 
 # --- Handler ---
@@ -203,6 +284,8 @@ async def handler(ws: WebSocketServerProtocol, path: Optional[str] = None) -> No
                     await on_scan_active(ws, msg)
                 elif action == "ASK":
                     await on_ask(ws, msg)
+                elif action == "ASK_FEEDBACK":
+                    await on_ask_feedback(ws, msg)
                 else:
                     await ws.send(fail(action, "Unknown action"))
 

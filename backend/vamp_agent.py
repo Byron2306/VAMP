@@ -11,10 +11,12 @@ import datetime as dt
 import hashlib
 import inspect
 import json
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -22,6 +24,12 @@ from playwright.async_api import async_playwright, Error as PWError, TimeoutErro
 
 from . import BRAIN_DATA_DIR, STATE_DIR
 from .nwu_brain.scoring import NWUScorer
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger("vamp_agent")
 
 # --------------------------------------------------------------------------------------
 # Constants / Globals
@@ -31,8 +39,8 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
-    "headless": False,
-    "slow_mo": 200,  # Slower for better reliability with Office365
+    "headless": True,
+    "slow_mo": 0,
     "args": [
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
@@ -63,6 +71,8 @@ _PLAYWRIGHT = None
 _BROWSER = None
 _CTX = None
 _PAGES: Dict[str, Any] = {}
+_SERVICE_CONTEXTS: Dict[str, Any] = {}
+_CONTEXT_LOCK = asyncio.Lock()
 
 # Service-specific storage state paths and URLs
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -80,6 +90,8 @@ SERVICE_URLS = {
     "drive": "https://drive.google.com/drive/my-drive",
     # Add for Nextcloud: "nextcloud": "https://your.nextcloud.instance/apps/files/"
 }
+
+ALLOW_INTERACTIVE_LOGIN = os.getenv("VAMP_ALLOW_INTERACTIVE_LOGIN", "1").strip().lower() not in {"0", "false", "no"}
 
 # NWU Brain scorer
 try:
@@ -112,68 +124,16 @@ async def ensure_browser() -> None:
     global _PLAYWRIGHT, _BROWSER
     if _BROWSER is not None:
         return
-        
+
     logger.info("Initializing Playwright browser with Office365 compatibility...")
     _PLAYWRIGHT = await async_playwright().start()
     _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
 
-async def get_authenticated_context(service: str) -> Any:
-    """Get or create an authenticated context using storage state."""
-    state_path = STATE_PATHS.get(service)
-    if not state_path:
-        logger.warning(f"No state path defined for service: {service}")
-        return await _BROWSER.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent=USER_AGENT,
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        )
-    
-    if not state_path.exists():
-        logger.info(f"No storage state found for {service}. Prompting manual login...")
-        context = await _BROWSER.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent=USER_AGENT,
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        )
-        page = await context.new_page()
-        await page.goto(SERVICE_URLS[service])
-        
-        # Detect login page and pause for manual input
-        login_selector = {
-            "outlook": 'input[name="loginfmt"]',  # Microsoft email input
-            "onedrive": 'input[name="loginfmt"]',  # Same as Outlook
-            "drive": 'input[type="email"]',  # Google email input
-        }.get(service)
-
-        if login_selector:
-            input("Please complete login in the browser window, then press Enter here...")
-            await context.storage_state(path=str(state_path))
-        else:
-            logger.warning(f"No login selector for {service}; skipping state save.")
-
-        await page.close()
-        return context
-
-    # Load existing state
-    return await _BROWSER.new_context(
-        storage_state=str(state_path),
-        viewport={'width': 1280, 'height': 800},
-        user_agent=USER_AGENT,
-        extra_http_headers={
+def _base_context_kwargs() -> Dict[str, Any]:
+    return {
+        'viewport': {'width': 1280, 'height': 800},
+        'user_agent': USER_AGENT,
+        'extra_http_headers': {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.5',
             'Accept-Encoding': 'gzip, deflate, br',
@@ -181,7 +141,37 @@ async def get_authenticated_context(service: str) -> Any:
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
         }
-    )
+    }
+
+
+async def get_authenticated_context(service: str) -> Any:
+    """Get or create an authenticated context using storage state."""
+    await ensure_browser()
+
+    key = service or "generic"
+
+    async with _CONTEXT_LOCK:
+        existing = _SERVICE_CONTEXTS.get(key)
+        if existing is not None:
+            try:
+                if not existing.is_closed():
+                    return existing
+            except Exception:
+                pass
+            _SERVICE_CONTEXTS.pop(key, None)
+
+        state_path = STATE_PATHS.get(service)
+        context_kwargs = _base_context_kwargs()
+
+        await _ensure_storage_state(service, state_path)
+
+        if state_path and state_path.exists():
+            context_kwargs['storage_state'] = str(state_path)
+
+        context = await _BROWSER.new_context(**context_kwargs)
+        await apply_stealth(context)
+        _SERVICE_CONTEXTS[key] = context
+        return context
 
 # --------------------------------------------------------------------------------------
 # Stealth enhancements
@@ -194,6 +184,107 @@ async def apply_stealth(context: Any) -> None:
         Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
         Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
     """)
+
+
+async def _prompt_manual_login(context: Any, service: str, state_path: Path) -> None:
+    """Open a visible Chromium page and capture storage state after manual login."""
+
+    url = SERVICE_URLS.get(service)
+    if not url:
+        raise RuntimeError(f"No login URL configured for {service}")
+
+    page = await context.new_page()
+    try:
+        await page.goto(url, wait_until="load", timeout=60000)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to load {url} for {service}: {exc}") from exc
+
+    logger.info(
+        "Storage state for %s not found. A visible Chromium window has been opened for manual login.",
+        service,
+    )
+    prompt = (
+        f"Complete the {service} sign-in flow in the opened Chromium window.\n"
+        "Once your mailbox is visible, return to this terminal and press Enter to continue..."
+    )
+
+    try:
+        input(prompt)
+    except EOFError as exc:
+        raise RuntimeError(
+            "Interactive confirmation was not available while capturing the login session. "
+            "Run the VAMP backend from a terminal where keyboard input is permitted or pre-create "
+            f"the {service} storage_state file manually using Playwright's tooling."
+        ) from exc
+
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    await context.storage_state(path=str(state_path))
+    logger.info("Saved %s storage state to %s", service, state_path)
+
+    try:
+        await page.close()
+    except Exception:
+        pass
+
+
+async def _ensure_storage_state(service: Optional[str], state_path: Optional[Path]) -> None:
+    """Ensure a storage_state file exists; trigger interactive capture if necessary."""
+
+    if not service or not state_path:
+        return
+
+    if state_path.exists():
+        return
+
+    if not BROWSER_CONFIG.get("headless", True):
+        # Headful mode will allow the user to login during the scan itself.
+        logger.info(
+            "Storage state for %s missing but headless mode is disabled. Login during the scan will be required.",
+            service,
+        )
+        return
+
+    if not ALLOW_INTERACTIVE_LOGIN:
+        raise RuntimeError(
+            f"Storage state for {service} not found at {state_path}. "
+            "Provide a pre-authenticated storage_state file or set VAMP_ALLOW_INTERACTIVE_LOGIN=1 to capture it interactively."
+        )
+
+    # Ensure Playwright is running so we can spawn a temporary visible browser.
+    await ensure_browser()
+
+    try:
+        login_browser = await _PLAYWRIGHT.chromium.launch(
+            headless=False,
+            args=BROWSER_CONFIG.get("args", []),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Storage state for {service} not found at {state_path} and a visible Chromium session could not be started ({exc}). "
+            "Install the required Playwright browser dependencies for your platform or generate the storage_state file manually "
+            "with Playwright before retrying."
+        ) from exc
+
+    login_context = await login_browser.new_context(**_base_context_kwargs())
+
+    try:
+        await apply_stealth(login_context)
+        await _prompt_manual_login(login_context, service, state_path)
+    finally:
+        try:
+            await login_context.close()
+        except Exception:
+            pass
+        try:
+            await login_browser.close()
+        except Exception:
+            pass
+
+    if not state_path.exists():
+        raise RuntimeError(
+            f"Interactive login for {service} did not persist any credentials. "
+            "Repeat the login flow and ensure you confirm completion in the terminal."
+        )
 
 # --------------------------------------------------------------------------------------
 # Utilities
@@ -467,24 +558,17 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     if on_progress:
         await on_progress(10, f"Authenticating to {service}...")
     
-    if service in ["outlook", "onedrive", "drive"]:
-        context = await get_authenticated_context(service)
-    else:
-        context = await _BROWSER.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent=USER_AGENT,
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        )
-    
-    await apply_stealth(context)
-    
+    try:
+        if service in ["outlook", "onedrive", "drive"]:
+            context = await get_authenticated_context(service)
+        else:
+            context = await get_authenticated_context(service or "generic")
+    except Exception as e:
+        logger.error(f"Context error: {e}")
+        if on_progress:
+            await on_progress(0, f"Authentication failed: {e}")
+        return []
+
     page = await context.new_page()
     
     if on_progress:
@@ -511,7 +595,6 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         items = await scrape_efundi(page, month_bounds)
     
     await page.close()
-    await context.close()
     
     if on_progress:
         await on_progress(40, "Processing items...")
@@ -529,15 +612,6 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         await _score_and_batch(deduped, lambda batch: None, on_progress)  # Score if needed
     
     return deduped
-
-# --------------------------------------------------------------------------------------
-# Type Definitions and Logger Setup
-# --------------------------------------------------------------------------------------
-
-from typing import Callable
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger("vamp_agent")
 
 # --------------------------------------------------------------------------------------
 # SCAN_ACTIVE Wrapper for WebSocket integration
