@@ -25,12 +25,6 @@ from playwright.async_api import async_playwright, Error as PWError, TimeoutErro
 from . import BRAIN_DATA_DIR, STATE_DIR
 from .nwu_brain.scoring import NWUScorer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("vamp_agent")
-
 # --------------------------------------------------------------------------------------
 # Constants / Globals
 # --------------------------------------------------------------------------------------
@@ -39,7 +33,7 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
-    "headless": True,
+    "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
     "slow_mo": 0,
     "args": [
         '--disable-web-security',
@@ -119,16 +113,6 @@ except Exception as e:
 # Enhanced Browser Management with Authentication Fixes
 # --------------------------------------------------------------------------------------
 
-async def ensure_browser() -> None:
-    """Launch persistent browser with Office365-compatible configuration."""
-    global _PLAYWRIGHT, _BROWSER
-    if _BROWSER is not None:
-        return
-
-    logger.info("Initializing Playwright browser with Office365 compatibility...")
-    _PLAYWRIGHT = await async_playwright().start()
-    _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
-
 def _base_context_kwargs() -> Dict[str, Any]:
     return {
         'viewport': {'width': 1280, 'height': 800},
@@ -143,6 +127,16 @@ def _base_context_kwargs() -> Dict[str, Any]:
         }
     }
 
+
+async def ensure_browser() -> None:
+    """Launch persistent browser with Office365-compatible configuration."""
+    global _PLAYWRIGHT, _BROWSER
+    if _BROWSER is not None:
+        return
+
+    logger.info("Initializing Playwright browser with Office365 compatibility...")
+    _PLAYWRIGHT = await async_playwright().start()
+    _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
 
 async def get_authenticated_context(service: str) -> Any:
     """Get or create an authenticated context using storage state."""
@@ -558,17 +552,24 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     if on_progress:
         await on_progress(10, f"Authenticating to {service}...")
     
-    try:
-        if service in ["outlook", "onedrive", "drive"]:
-            context = await get_authenticated_context(service)
-        else:
-            context = await get_authenticated_context(service or "generic")
-    except Exception as e:
-        logger.error(f"Context error: {e}")
-        if on_progress:
-            await on_progress(0, f"Authentication failed: {e}")
-        return []
-
+    if service in ["outlook", "onedrive", "drive"]:
+        context = await get_authenticated_context(service)
+    else:
+        context = await _BROWSER.new_context(
+            viewport={'width': 1280, 'height': 800},
+            user_agent=USER_AGENT,
+            extra_http_headers={
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+            }
+        )
+    
+    await apply_stealth(context)
+    
     page = await context.new_page()
     
     if on_progress:
@@ -595,6 +596,7 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         items = await scrape_efundi(page, month_bounds)
     
     await page.close()
+    await context.close()
     
     if on_progress:
         await on_progress(40, "Processing items...")
@@ -612,6 +614,13 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         await _score_and_batch(deduped, lambda batch: None, on_progress)  # Score if needed
     
     return deduped
+
+# --------------------------------------------------------------------------------------
+# Type Definitions and Logger Setup
+# --------------------------------------------------------------------------------------
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("vamp_agent")
 
 # --------------------------------------------------------------------------------------
 # SCAN_ACTIVE Wrapper for WebSocket integration
