@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>VAMP — NWU Brain</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Enhanced dark gothic theme -->
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body class="vamp-popup">
+
+  <!-- Enhanced Brand / header -->
+  <header class="brand panel">
+    <img id="brandIcon" src="icons/icon128.png" alt="VAMP" class="brand-icon" />
+    <div class="brand-title">VAMP</div>
+    <div class="brand-sub">Academic Performance Intelligence Agent — NWU Brain</div>
+  </header>
+
+  <!-- Connection -->
+  <section class="panel connection-section">
+    <div class="section-title">Connection</div>
+    <div class="row">
+      <label for="wsUrl">WebSocket URL</label>
+      <input id="wsUrl" type="text" value="ws://127.0.0.1:8765" />
+    </div>
+
+    <div class="row status-line">
+      <span class="label">Status</span>
+      <span id="wsStatus">disconnected</span>
+    </div>
+  </section>
+
+  <!-- Identity / scope -->
+  <section class="panel identity-section">
+    <div class="section-title">Identity</div>
+    <div class="row">
+      <label for="email">Email</label>
+      <input id="email" type="text" placeholder="name@university.ac.za" />
+    </div>
+    <div class="row">
+      <label for="name">Name</label>
+      <input id="name" type="text" placeholder="Display name" />
+    </div>
+    <div class="row">
+      <label for="org">Organisation</label>
+      <input id="org" type="text" value="NWU" />
+    </div>
+    <div class="row">
+      <label for="year">Year</label>
+      <input id="year" type="number" min="2022" max="2100" />
+    </div>
+    <div class="row">
+      <label for="month">Month</label>
+      <select id="month" class="select"></select>
+    </div>
+  </section>
+
+  <!-- Enhanced Controls -->
+  <section class="panel controls-section">
+    <div class="section-title">Evidence Management</div>
+    <div class="controls-grid">
+      <button id="btnEnrol" class="btn">Enrol</button>
+      <button id="btnState" class="btn">Get State</button>
+      <button id="btnScan" class="btn primary">Scan Active</button>
+      <button id="btnFinalise" class="btn">Finalise Month</button>
+      <button id="btnExport" class="btn">Export Month CSV</button>
+      <button id="btnCompile" class="btn">Compile Year CSV</button>
+    </div>
+  </section>
+
+  <!-- Enhanced Assistant -->
+  <section class="panel assistant-section">
+    <div class="section-title">Ask VAMP</div>
+    <textarea id="askText" class="ask-input" placeholder="e.g., 'Summarise my October OHS evidence with risks and next actions.'"></textarea>
+    <div class="row row-compact">
+      <button id="btnAsk" class="btn primary">Ask</button>
+      <button id="btnAskFeedback" class="btn">Ask (Assessor-strict)</button>
+    </div>
+  </section>
+
+  <!-- Enhanced Evidence Display Section -->
+  <section class="panel evidence-section">
+    <div class="section-title">Office365 Evidence</div>
+    <div class="evidence-controls">
+      <button id="btnRefreshEvidence" class="btn">🔄 Refresh</button>
+      <button id="btnViewDetails" class="btn">📊 View Details</button>
+      <button id="btnClearEvidence" class="btn">🗑️ Clear</button>
+    </div>
+    <div id="evidenceTableContainer" class="evidence-table-container">
+      <table id="evidenceTable" class="evidence-table">
+        <thead>
+          <tr>
+            <th data-sort="type">Type</th>
+            <th data-sort="title" class="sort-asc">Subject</th>
+            <th data-sort="date">Date</th>
+            <th data-sort="kpa">KPA</th>
+            <th data-sort="score">Score</th>
+            <th data-sort="source">Source</th>
+          </tr>
+        </thead>
+        <tbody id="evidenceTableBody">
+          <tr>
+            <td colspan="6" class="no-evidence">
+              <div class="no-evidence-content">
+                <div class="no-evidence-icon">📧</div>
+                <div class="no-evidence-text">Scan Outlook Office365 to see evidence</div>
+                <div class="no-evidence-hint">Click "Scan Active" while on your Outlook mailbox</div>
+              </div>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="evidence-stats">
+      <span id="evidenceCount">0 Office365 items</span>
+      <span id="evidenceScore">Ready to scan</span>
+      <span id="evidenceLastScan">Last: Never</span>
+    </div>
+  </section>
+
+  <!-- Enhanced Progress + notes -->
+  <section class="panel progress-section">
+    <div class="section-title">Scan Progress</div>
+    <div class="progress-wrap">
+      <div class="progress" aria-hidden="true">
+        <span id="progressBar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></span>
+      </div>
+      <div class="note"><span id="scanNote">Ready to scan</span></div>
+    </div>
+  </section>
+
+  <!-- Enhanced Output -->
+  <section class="panel output-section">
+    <div class="section-title">Activity Log</div>
+    <div id="answerBox" class="answer" aria-live="polite"></div>
+  </section>
+
+  <!-- Evidence Details Modal -->
+  <div id="evidenceModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>Evidence Details</h3>
+        <button id="btnCloseModal" class="btn-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div id="evidenceDetails" class="evidence-details">
+          <div class="detail-section">
+            <label>Title:</label>
+            <span id="detailTitle" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>Source:</label>
+            <span id="detailSource" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>Date:</label>
+            <span id="detailDate" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>KPA:</label>
+            <span id="detailKPA" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>Score:</label>
+            <span id="detailScore" class="detail-value">-</span>
+          </div>
+          <div class="detail-section full-width">
+            <label>Snippet:</label>
+            <div id="detailSnippet" class="detail-snippet">-</div>
+          </div>
+          <div class="detail-section full-width">
+            <label>Rationale:</label>
+            <div id="detailRationale" class="detail-rationale">-</div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnCloseDetails" class="btn primary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Audio cue -->
+  <audio id="openSound" src="sounds/vamp.wav" preload="auto"></audio>
+
+  <!-- Enhanced Logic -->
+  <script src="popup.js" defer></script>
+</body>
+</html>

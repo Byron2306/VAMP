@@ -1,0 +1,87 @@
+{
+  "manifest_version": 3,
+  "name": "VAMP Evidence Agent",
+  "short_name": "VAMP",
+  "version": "0.2.3",
+  "description": "Live in-session scanning of Outlook/OneDrive/Google Drive/eFundi with Python agent orchestration, classification, and reporting.",
+
+  "icons": {
+    "16": "icons/icon128.png",
+    "32": "icons/icon128.png",
+    "48": "icons/icon128.png",
+    "128": "icons/icon128.png"
+  },
+
+  "action": {
+    "default_title": "VAMP",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon128.png",
+      "32": "icons/icon128.png",
+      "48": "icons/icon128.png",
+      "128": "icons/icon128.png"
+    }
+  },
+
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "downloads",
+    "offscreen"
+  ],
+
+  "host_permissions": [
+    "https://outlook.office.com/*",
+    "https://outlook.live.com/*",
+    "https://outlook.office365.com/*",
+    "https://*.sharepoint.com/*",
+    "https://*.my.sharepoint.com/*",
+    "https://*.files.1drv.com/*",
+    "https://onedrive.live.com/*",
+    "https://drive.google.com/*",
+    "https://efundi.nwu.ac.za/*"
+  ],
+
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.sharepoint.com/*",
+        "https://*.my.sharepoint.com/*",
+        "https://*.files.1drv.com/*",
+        "https://onedrive.live.com/*",
+        "https://drive.google.com/*",
+        "https://efundi.nwu.ac.za/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icons/*",
+        "images/*",
+        "sounds/*",
+        "offscreen.html",
+        "offscreen.js"
+      ],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": false
+  }
+}
