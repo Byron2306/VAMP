@@ -281,6 +281,102 @@ def _credentials_for(service: Optional[str], identity: Optional[str]) -> Optiona
     return None
 
 
+async def _dismiss_kmsi_prompt(page: Any) -> None:
+    """Dismiss the 'Stay signed in?' prompt if it appears."""
+
+    try:
+        await page.wait_for_selector('input[id="idBtn_Back"]', timeout=5000)
+        await page.click('input[id="idBtn_Back"]')
+        return
+    except PWTimeout:
+        pass
+
+    try:
+        await page.wait_for_selector('button#idBtn_Back, button[data-report-value="No"]', timeout=3000)
+        await page.click('button#idBtn_Back, button[data-report-value="No"]')
+    except PWTimeout:
+        pass
+
+
+async def _try_nwu_adfs_login(page: Any, username: str, password: str) -> bool:
+    """Attempt to authenticate against the NWU ADFS portal if detected."""
+
+    selectors = [
+        '#userNameInput',
+        'input[name="UserName"]',
+    ]
+    password_selectors = [
+        '#passwordInput',
+        'input[name="Password"]',
+    ]
+
+    user_selector = None
+    for candidate in selectors:
+        try:
+            await page.wait_for_selector(candidate, timeout=2000)
+            user_selector = candidate
+            break
+        except PWTimeout:
+            continue
+
+    if not user_selector:
+        return False
+
+    logger.info("Detected NWU ADFS login flow; attempting automated authentication.")
+
+    password_selector = None
+    for candidate in password_selectors:
+        try:
+            await page.wait_for_selector(candidate, timeout=2000)
+            password_selector = candidate
+            break
+        except PWTimeout:
+            continue
+
+    if not password_selector:
+        logger.warning("NWU ADFS login detected but password field not found; falling back to manual flow.")
+        return False
+
+    await page.fill(user_selector, username)
+    await page.fill(password_selector, password)
+
+    submit_selectors = [
+        '#submitButton',
+        'input[type="submit"]#submitButton',
+        'button[type="submit"]#submitButton',
+        'input[type="submit"]',
+        'button[type="submit"]',
+    ]
+
+    clicked = False
+    for candidate in submit_selectors:
+        try:
+            element = await page.query_selector(candidate)
+            if element:
+                await element.click()
+                clicked = True
+                break
+        except Exception:
+            continue
+
+    if not clicked:
+        await page.press(password_selector, "Enter")
+
+    try:
+        await page.wait_for_load_state("networkidle", timeout=30000)
+    except Exception:
+        pass
+
+    return True
+
+
+async def _wait_for_outlook_ready(page: Any) -> None:
+    """Wait until the Outlook mailbox UI is available."""
+
+    await _dismiss_kmsi_prompt(page)
+    await page.wait_for_selector('[role="navigation"], [aria-label="Mail"]', timeout=60000)
+
+
 async def _automated_login(service: Optional[str], identity: Optional[str], state_path: Optional[Path]) -> bool:
     """Attempt a fully headless login when credentials are configured."""
 
@@ -307,21 +403,33 @@ async def _automated_login(service: Optional[str], identity: Optional[str], stat
         await page.goto(url, wait_until="load", timeout=60000)
 
         if service == "outlook":
-            await page.wait_for_selector('input[name="loginfmt"]', timeout=30000)
-            await page.fill('input[name="loginfmt"]', username)
-            await page.click('input[type="submit"]#idSIButton9')
+            # Some tenants immediately redirect to a custom ADFS login (e.g. NWU).
+            adfs_used = await _try_nwu_adfs_login(page, username, password)
 
-            await page.wait_for_selector('input[name="passwd"]', timeout=30000)
-            await page.fill('input[name="passwd"]', password)
-            await page.click('input[type="submit"]#idSIButton9')
+            if not adfs_used:
+                await page.wait_for_selector('input[name="loginfmt"]', timeout=30000)
+                await page.fill('input[name="loginfmt"]', username)
+                await page.click('input[type="submit"]#idSIButton9')
 
-            try:
-                await page.wait_for_selector('input[id="idBtn_Back"]', timeout=5000)
-                await page.click('input[id="idBtn_Back"]')
-            except PWTimeout:
-                pass
+                try:
+                    await page.wait_for_selector('input[name="passwd"]', timeout=20000)
+                except PWTimeout:
+                    adfs_used = await _try_nwu_adfs_login(page, username, password)
+                else:
+                    await page.fill('input[name="passwd"]', password)
+                    await page.click('input[type="submit"]#idSIButton9')
 
-            await page.wait_for_selector('[role="navigation"], [aria-label="Mail"]', timeout=60000)
+            if adfs_used:
+                # Some ADFS flows still bounce back to Microsoft for the final password prompt.
+                try:
+                    await page.wait_for_selector('input[name="passwd"]', timeout=5000)
+                except PWTimeout:
+                    pass
+                else:
+                    await page.fill('input[name="passwd"]', password)
+                    await page.click('input[type="submit"]#idSIButton9')
+
+            await _wait_for_outlook_ready(page)
         elif service == "onedrive":
             await page.wait_for_selector('input[name="loginfmt"]', timeout=30000)
             await page.fill('input[name="loginfmt"]', username)
