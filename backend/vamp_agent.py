@@ -33,7 +33,7 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
-    "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
+    "headless": True,
     "slow_mo": 0,
     "args": [
         '--disable-web-security',
@@ -138,6 +138,21 @@ async def ensure_browser() -> None:
     _PLAYWRIGHT = await async_playwright().start()
     _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
 
+def _base_context_kwargs() -> Dict[str, Any]:
+    return {
+        'viewport': {'width': 1280, 'height': 800},
+        'user_agent': USER_AGENT,
+        'extra_http_headers': {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+    }
+
+
 async def get_authenticated_context(service: str) -> Any:
     """Get or create an authenticated context using storage state."""
     await ensure_browser()
@@ -157,43 +172,40 @@ async def get_authenticated_context(service: str) -> Any:
         state_path = STATE_PATHS.get(service)
         context_kwargs = _base_context_kwargs()
 
-        await _ensure_storage_state(service, state_path)
-
         if state_path and state_path.exists():
             context_kwargs['storage_state'] = str(state_path)
 
         context = await _BROWSER.new_context(**context_kwargs)
+
+        if state_path and not state_path.exists():
+            if BROWSER_CONFIG.get("headless", True):
+                await context.close()
+                raise RuntimeError(
+                    f"Storage state for {service} not found at {state_path}. "
+                    "Headless mode requires a pre-authenticated storage_state file."
+                )
+
+            logger.info(f"No storage state found for {service}. Prompting manual login...")
+            page = await context.new_page()
+            await page.goto(SERVICE_URLS[service])
+
+            login_selector = {
+                "outlook": 'input[name="loginfmt"]',
+                "onedrive": 'input[name="loginfmt"]',
+                "drive": 'input[type="email"]',
+            }.get(service)
+
+            if login_selector:
+                input("Please complete login in the browser window, then press Enter here...")
+                await context.storage_state(path=str(state_path))
+            else:
+                logger.warning(f"No login selector for {service}; skipping state save.")
+
+            await page.close()
+
         await apply_stealth(context)
         _SERVICE_CONTEXTS[key] = context
         return context
-
-
-async def _safe_close_page(page: Any) -> None:
-    if not page:
-        return
-    try:
-        await page.close()
-    except Exception:
-        logger.debug("Failed to close page cleanly", exc_info=True)
-
-
-async def _safe_close_context(context: Any) -> None:
-    if not context:
-        return
-    try:
-        await context.close()
-    except Exception:
-        logger.debug("Failed to close context cleanly", exc_info=True)
-
-
-async def _invalidate_cached_context(service: Optional[str], context: Any) -> None:
-    key = (service or "generic") if context else None
-    if key is not None:
-        async with _CONTEXT_LOCK:
-            cached = _SERVICE_CONTEXTS.get(key)
-            if cached is context:
-                _SERVICE_CONTEXTS.pop(key, None)
-    await _safe_close_context(context)
 
 # --------------------------------------------------------------------------------------
 # Stealth enhancements
@@ -580,70 +592,44 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     if on_progress:
         await on_progress(10, f"Authenticating to {service}...")
     
-    cached_service = service in {"outlook", "onedrive", "drive"}
-    context: Optional[Any] = None
-    page: Optional[Any] = None
-    items: List[Dict[str, Any]] = []
-
     try:
-        if cached_service:
+        if service in ["outlook", "onedrive", "drive"]:
             context = await get_authenticated_context(service)
         else:
-            context = await _BROWSER.new_context(
-                viewport={'width': 1280, 'height': 800},
-                user_agent=USER_AGENT,
-                extra_http_headers={
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.5',
-                    'Accept-Encoding': 'gzip, deflate, br',
-                    'DNT': '1',
-                    'Connection': 'keep-alive',
-                    'Upgrade-Insecure-Requests': '1',
-                }
-            )
-            await apply_stealth(context)
-
-        if page is None:
-            page = await context.new_page()
-
+            context = await get_authenticated_context(service or "generic")
+    except Exception as e:
+        logger.error(f"Context error: {e}")
         if on_progress:
-            await on_progress(20, f"Navigating to {url}...")
+            await on_progress(0, f"Authentication failed: {e}")
+        return []
 
-        try:
-            await page.goto(url, timeout=60000)
-        except PWError as e:
-            logger.error(f"Navigation failed: {e}")
-            if cached_service:
-                await _invalidate_cached_context(service, context)
-            else:
-                await _safe_close_context(context)
-            return []
-
-        if on_progress:
-            await on_progress(30, "Loading content...")
-
-        if service == "outlook":
-            items = await scrape_outlook(page, month_bounds)
-        elif service == "onedrive":
-            items = await scrape_onedrive(page, month_bounds)
-        elif service == "drive":
-            items = await scrape_drive(page, month_bounds)
-        elif service == "efundi":
-            items = await scrape_efundi(page, month_bounds)
-
-    except Exception:
-        logger.error("Active scan failed", exc_info=True)
-        if cached_service:
-            await _invalidate_cached_context(service, context)
-        else:
-            await _safe_close_context(context)
-        raise
-    finally:
-        await _safe_close_page(page)
-
-    if not cached_service:
-        await _safe_close_context(context)
-
+    page = await context.new_page()
+    
+    if on_progress:
+        await on_progress(20, f"Navigating to {url}...")
+    
+    try:
+        await page.goto(url, timeout=60000)
+    except PWError as e:
+        logger.error(f"Navigation failed: {e}")
+        await context.close()
+        return []
+    
+    if on_progress:
+        await on_progress(30, "Loading content...")
+    
+    items = []
+    if service == "outlook":
+        items = await scrape_outlook(page, month_bounds)
+    elif service == "onedrive":
+        items = await scrape_onedrive(page, month_bounds)
+    elif service == "drive":
+        items = await scrape_drive(page, month_bounds)
+    elif service == "efundi":
+        items = await scrape_efundi(page, month_bounds)
+    
+    await page.close()
+    
     if on_progress:
         await on_progress(40, "Processing items...")
 

@@ -16,10 +16,10 @@ from functools import partial
 from typing import Any, Dict, Optional
 
 import websockets
-try:  # Prefer the non-deprecated legacy protocol shim when available
-    from websockets.legacy.server import WebSocketServerProtocol
-except ImportError:  # Fall back for very old releases that lacked the legacy module
-    from websockets.server import WebSocketServerProtocol  # type: ignore
+try:  # websockets >= 10
+    from websockets.server import WebSocketServerProtocol
+except ImportError:  # Compatibility for older deployments
+    from websockets.legacy.server import WebSocketServerProtocol  # type: ignore
 
 from . import STORE_DIR
 from .vamp_store import VampStore, _uid
