@@ -3,3 +3,4 @@ websocket-client
 requests
 pandas
 playwright
+websockets
