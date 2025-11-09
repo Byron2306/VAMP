@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
 
 from . import BRAIN_DATA_DIR, STATE_DIR
+from .vamp_store import _uid
 from .nwu_brain.scoring import NWUScorer
 
 # --------------------------------------------------------------------------------------
@@ -34,7 +35,6 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
     "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
-    "headless": True,
     "slow_mo": 0,
     "args": [
         '--disable-web-security',
@@ -72,11 +72,16 @@ _CONTEXT_LOCK = asyncio.Lock()
 # Service-specific storage state paths and URLs
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-STATE_PATHS = {
+LEGACY_STATE_PATHS = {
     "outlook": STATE_DIR / "outlook_state.json",
     "onedrive": STATE_DIR / "onedrive_state.json",
     "drive": STATE_DIR / "drive_state.json",
-    # Add for Nextcloud if implemented: "nextcloud": STATE_DIR / "nextcloud_state.json"
+}
+
+SERVICE_STATE_DIRS = {
+    "outlook": STATE_DIR / "outlook",
+    "onedrive": STATE_DIR / "onedrive",
+    "drive": STATE_DIR / "drive",
 }
 
 SERVICE_URLS = {
@@ -114,21 +119,6 @@ except Exception as e:
 # Enhanced Browser Management with Authentication Fixes
 # --------------------------------------------------------------------------------------
 
-def _base_context_kwargs() -> Dict[str, Any]:
-    return {
-        'viewport': {'width': 1280, 'height': 800},
-        'user_agent': USER_AGENT,
-        'extra_http_headers': {
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.5',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-        }
-    }
-
-
 async def ensure_browser() -> None:
     """Launch persistent browser with Office365-compatible configuration."""
     global _PLAYWRIGHT, _BROWSER
@@ -139,6 +129,7 @@ async def ensure_browser() -> None:
     _PLAYWRIGHT = await async_playwright().start()
     _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
 
+
 def _base_context_kwargs() -> Dict[str, Any]:
     return {
         'viewport': {'width': 1280, 'height': 800},
@@ -154,11 +145,39 @@ def _base_context_kwargs() -> Dict[str, Any]:
     }
 
 
-async def get_authenticated_context(service: str) -> Any:
+def _state_path_for(service: Optional[str], identity: Optional[str]) -> Optional[Path]:
+    if not service:
+        return None
+
+    base = SERVICE_STATE_DIRS.get(service)
+    if not base:
+        return None
+
+    base.mkdir(parents=True, exist_ok=True)
+
+    safe_identity = _uid(identity) if identity else "default"
+    state_path = base / f"{safe_identity}.json"
+
+    # Migrate legacy single-state files if present
+    legacy = LEGACY_STATE_PATHS.get(service)
+    if legacy and legacy.exists() and not state_path.exists():
+        try:
+            import shutil
+
+            shutil.copy2(legacy, state_path)
+            logger.info("Migrated legacy %s storage state from %s", service, legacy)
+        except Exception as exc:
+            logger.warning("Failed to migrate legacy %s storage state: %s", service, exc)
+
+    return state_path
+
+
+async def get_authenticated_context(service: str, identity: Optional[str] = None) -> Any:
     """Get or create an authenticated context using storage state."""
     await ensure_browser()
 
-    key = service or "generic"
+    identity_key = _uid(identity) if identity else "default"
+    key = f"{service}:{identity_key}" if service else f"generic:{identity_key}"
 
     async with _CONTEXT_LOCK:
         existing = _SERVICE_CONTEXTS.get(key)
@@ -170,10 +189,10 @@ async def get_authenticated_context(service: str) -> Any:
                 pass
             _SERVICE_CONTEXTS.pop(key, None)
 
-        state_path = STATE_PATHS.get(service)
+        state_path = _state_path_for(service, identity)
         context_kwargs = _base_context_kwargs()
 
-        await _ensure_storage_state(service, state_path)
+        await _ensure_storage_state(service, state_path, identity)
 
         if state_path and state_path.exists():
             context_kwargs['storage_state'] = str(state_path)
@@ -188,7 +207,7 @@ async def get_authenticated_context(service: str) -> Any:
                     "Headless mode requires a pre-authenticated storage_state file."
                 )
 
-            logger.info(f"No storage state found for {service}. Prompting manual login...")
+            logger.info(f"No storage state found for {service} ({identity or 'default'}). Prompting manual login...")
             page = await context.new_page()
             await page.goto(SERVICE_URLS[service])
 
@@ -199,7 +218,9 @@ async def get_authenticated_context(service: str) -> Any:
             }.get(service)
 
             if login_selector:
-                input("Please complete login in the browser window, then press Enter here...")
+                input(
+                    f"Complete the {service} sign-in for {identity or 'this account'} in the browser window, then press Enter here..."
+                )
                 await context.storage_state(path=str(state_path))
             else:
                 logger.warning(f"No login selector for {service}; skipping state save.")
@@ -223,7 +244,7 @@ async def apply_stealth(context: Any) -> None:
     """)
 
 
-async def _prompt_manual_login(context: Any, service: str, state_path: Path) -> None:
+async def _prompt_manual_login(context: Any, service: str, state_path: Path, identity: Optional[str]) -> None:
     """Open a visible Chromium page and capture storage state after manual login."""
 
     url = SERVICE_URLS.get(service)
@@ -237,11 +258,12 @@ async def _prompt_manual_login(context: Any, service: str, state_path: Path) -> 
         raise RuntimeError(f"Failed to load {url} for {service}: {exc}") from exc
 
     logger.info(
-        "Storage state for %s not found. A visible Chromium window has been opened for manual login.",
+        "Storage state for %s (%s) not found. A visible Chromium window has been opened for manual login.",
         service,
+        identity or "default",
     )
     prompt = (
-        f"Complete the {service} sign-in flow in the opened Chromium window.\n"
+        f"Complete the {service} sign-in flow for {identity or 'this account'} in the opened Chromium window.\n"
         "Once your mailbox is visible, return to this terminal and press Enter to continue..."
     )
 
@@ -264,7 +286,7 @@ async def _prompt_manual_login(context: Any, service: str, state_path: Path) -> 
         pass
 
 
-async def _ensure_storage_state(service: Optional[str], state_path: Optional[Path]) -> None:
+async def _ensure_storage_state(service: Optional[str], state_path: Optional[Path], identity: Optional[str]) -> None:
     """Ensure a storage_state file exists; trigger interactive capture if necessary."""
 
     if not service or not state_path:
@@ -306,7 +328,7 @@ async def _ensure_storage_state(service: Optional[str], state_path: Optional[Pat
 
     try:
         await apply_stealth(login_context)
-        await _prompt_manual_login(login_context, service, state_path)
+        await _prompt_manual_login(login_context, service, state_path, identity)
     finally:
         try:
             await login_context.close()
@@ -573,7 +595,7 @@ async def scrape_efundi(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date
 # Router and Main Scan Function
 # --------------------------------------------------------------------------------------
 
-async def run_scan_active(url: str, on_progress: Optional[Callable] = None, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
+async def run_scan_active(url: str, on_progress: Optional[Callable] = None, month_bounds: Optional[Tuple[dt.date, dt.date]] = None, identity: Optional[str] = None) -> List[Dict[str, Any]]:
     await ensure_browser()
     
     parsed_url = urlparse(url)
@@ -597,9 +619,9 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     
     try:
         if service in ["outlook", "onedrive", "drive"]:
-            context = await get_authenticated_context(service)
+            context = await get_authenticated_context(service, identity)
         else:
-            context = await get_authenticated_context(service or "generic")
+            context = await get_authenticated_context(service or "generic", identity)
     except Exception as e:
         logger.error(f"Context error: {e}")
         if on_progress:
@@ -685,4 +707,4 @@ async def run_scan_active_ws(email=None, year=None, month=None, url=None, deep_r
     except:
         month_bounds = None
 
-    return await run_scan_active(url=url, month_bounds=month_bounds, on_progress=progress_callback)
+    return await run_scan_active(url=url, month_bounds=month_bounds, on_progress=progress_callback, identity=email)

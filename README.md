@@ -81,9 +81,14 @@ playwright install
 ```powershell
 $env:DEEPSEEK_API_URL = "http://127.0.0.1:11434/v1/chat/completions"
 $env:DEEPSEEK_MODEL   = "gpt-oss:120b-cloud"
+
+# Optional Ollama cloud overrides
+$env:OLLAMA_API_URL   = "https://api.ollama.cloud/api/chat"
+$env:OLLAMA_MODEL     = "gpt-oss:120b"
+$env:OLLAMA_API_KEY   = "<token>"
 ```
 
-> These are used by `deepseek_client.py` to call your local Ollama LLM.
+> `deepseek_client.py` will automatically detect Ollama-style endpoints (`/api/chat` or `/api/generate`) and adjust the payload/headers. If you only set the Ollama variables, the DeepSeek defaults are ignored.
 
 ---
 
@@ -100,7 +105,7 @@ It will:
 - Trigger scans via `run_scan_active`
 - Return scored, deduped results
 
-> Runtime data (Chrome storage states and evidence store) is written to `backend/data/states/` and `backend/data/store/`.
+> Runtime data (Chrome storage states and evidence store) is written to `backend/data/states/<service>/<user>.json` and `backend/data/store/`.
 
 ---
 
