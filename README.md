@@ -44,7 +44,8 @@ VAMP/
 │   └── extension/             # Chrome extension source (incl. icons/, sounds/)
 ├── requirements.txt
 └── scripts/
-    └── setup_backend.ps1
+    ├── setup_backend.ps1
+    └── setup_backend.bat
 ```
 
 ---
