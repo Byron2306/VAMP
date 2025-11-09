@@ -74,6 +74,17 @@ def fail(action: str, error: Any) -> str:
     return json.dumps({"ok": False, "action": action, "error": msg})
 
 
+async def _safe_send(ws: WebSocketServerProtocol, payload: str, action: str) -> bool:
+    """Send a payload to the client, gracefully handling disconnections."""
+
+    try:
+        await ws.send(payload)
+        return True
+    except websockets.exceptions.ConnectionClosed:
+        logger.info(f"Client disconnected while sending {action}")
+        return False
+
+
 def _uid_from(msg: Dict[str, Any]) -> str:
     email = (msg.get("email") or "").strip().lower()
     if email:
@@ -89,14 +100,14 @@ async def on_enrol(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
     name = msg.get("name", "").strip()
     org = msg.get("org", "NWU").strip()
     if not email:
-        await ws.send(fail("ENROL", "Email required"))
+        await _safe_send(ws, fail("ENROL", "Email required"), "ENROL")
         return
     try:
         profile = store.enroll(email, name, org)
-        await ws.send(ok("ENROL", profile))
+        await _safe_send(ws, ok("ENROL", profile), "ENROL")
         logger.info(f"Enrolled: {email}")
     except Exception as e:
-        await ws.send(fail("ENROL", str(e)))
+        await _safe_send(ws, fail("ENROL", str(e)), "ENROL")
 
 
 async def on_get_state(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -104,9 +115,9 @@ async def on_get_state(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None
     year = int(msg.get("year", 2025))
     try:
         year_doc = store.get_year_doc(uid, year)
-        await ws.send(ok("GET_STATE", {"year_doc": year_doc}))
+        await _safe_send(ws, ok("GET_STATE", {"year_doc": year_doc}), "GET_STATE")
     except Exception as e:
-        await ws.send(fail("GET_STATE", str(e)))
+        await _safe_send(ws, fail("GET_STATE", str(e)), "GET_STATE")
 
 
 async def on_finalise_month(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -115,9 +126,9 @@ async def on_finalise_month(ws: WebSocketServerProtocol, msg: Dict[str, Any]) ->
     month = int(msg.get("month", 11))
     try:
         doc = store.finalise_month(uid, year, month)
-        await ws.send(ok("FINALISE_MONTH", doc))
+        await _safe_send(ws, ok("FINALISE_MONTH", doc), "FINALISE_MONTH")
     except Exception as e:
-        await ws.send(fail("FINALISE_MONTH", str(e)))
+        await _safe_send(ws, fail("FINALISE_MONTH", str(e)), "FINALISE_MONTH")
 
 
 async def on_export_month(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -126,9 +137,9 @@ async def on_export_month(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
     month = int(msg.get("month", 11))
     try:
         path = store.export_month_csv(uid, year, month)
-        await ws.send(ok("EXPORT_MONTH", {"path": str(path)}))
+        await _safe_send(ws, ok("EXPORT_MONTH", {"path": str(path)}), "EXPORT_MONTH")
     except Exception as e:
-        await ws.send(fail("EXPORT_MONTH", str(e)))
+        await _safe_send(ws, fail("EXPORT_MONTH", str(e)), "EXPORT_MONTH")
 
 
 async def on_compile_year(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -136,14 +147,14 @@ async def on_compile_year(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
     year = int(msg.get("year", 2025))
     try:
         path = store.export_year_csv(uid, year)
-        await ws.send(ok("COMPILE_YEAR", {"path": str(path)}))
+        await _safe_send(ws, ok("COMPILE_YEAR", {"path": str(path)}), "COMPILE_YEAR")
     except Exception as e:
-        await ws.send(fail("COMPILE_YEAR", str(e)))
+        await _safe_send(ws, fail("COMPILE_YEAR", str(e)), "COMPILE_YEAR")
 
 
 async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
     if run_scan_active_ws is None:
-        await ws.send(fail("SCAN_ACTIVE", "vamp_agent not available"))
+        await _safe_send(ws, fail("SCAN_ACTIVE", "vamp_agent not available"), "SCAN_ACTIVE")
         return
 
     email = (msg.get("email") or "").strip().lower()
@@ -155,7 +166,8 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
 
     logger.info(f"Starting scan for {uid}, {year}-{month:02d}, url={url}")
 
-    await ws.send(ok("SCAN_ACTIVE/STARTED"))
+    if not await _safe_send(ws, ok("SCAN_ACTIVE/STARTED"), "SCAN_ACTIVE/STARTED"):
+        return
 
     # Progress callback that sends updates over WebSocket
     async def on_progress(progress: float, status: str):
@@ -178,20 +190,22 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
         )
 
         if not results:
-            await ws.send(ok("SCAN_ACTIVE/COMPLETE", {"added": 0, "total_evidence": 0}))
+            await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", {"added": 0, "total_evidence": 0}), "SCAN_ACTIVE/COMPLETE")
             return
 
         month_doc = store.add_items(uid, year, month, results)
         added = len(results)
         total = len(month_doc.get("items", []))
 
-        await ws.send(ok("SCAN_ACTIVE/COMPLETE", {"added": added, "total_evidence": total}))
+        await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", {"added": added, "total_evidence": total}), "SCAN_ACTIVE/COMPLETE")
         logger.info(f"Scan complete: +{added}, total={total}")
 
+    except websockets.exceptions.ConnectionClosed:
+        logger.info("Scan halted — client disconnected during send")
     except Exception as e:
         tb = traceback.format_exc()
         logger.error(f"Scan failed: {tb}")
-        await ws.send(fail("SCAN_ACTIVE", str(e)))
+        await _safe_send(ws, fail("SCAN_ACTIVE", str(e)), "SCAN_ACTIVE")
 
 
 async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -212,7 +226,7 @@ async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
         else:
             answer = f"[VAMP AI] Received: {question}"
 
-    await ws.send(ok("ASK", {"answer": answer}))
+    await _safe_send(ws, ok("ASK", {"answer": answer}), "ASK")
 
 
 async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
@@ -256,7 +270,7 @@ async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
         else:
             answer = f"[VAMP Assessor] Received: {question}"
 
-    await ws.send(ok("ASK_FEEDBACK", {"answer": answer}))
+    await _safe_send(ws, ok("ASK_FEEDBACK", {"answer": answer}), "ASK_FEEDBACK")
 
 
 # --- Handler ---
@@ -287,12 +301,14 @@ async def handler(ws: WebSocketServerProtocol, path: Optional[str] = None) -> No
                 elif action == "ASK_FEEDBACK":
                     await on_ask_feedback(ws, msg)
                 else:
-                    await ws.send(fail(action, "Unknown action"))
+                    await _safe_send(ws, fail(action, "Unknown action"), action or "UNKNOWN")
 
             except json.JSONDecodeError:
-                await ws.send(fail("ERROR", "Invalid JSON"))
+                if not await _safe_send(ws, fail("ERROR", "Invalid JSON"), "ERROR"):
+                    break
             except Exception as e:
-                await ws.send(fail("ERROR", str(e)))
+                if not await _safe_send(ws, fail("ERROR", str(e)), "ERROR"):
+                    break
     except websockets.exceptions.ConnectionClosed:
         logger.info(f"Client disconnected: {client_addr}")
     except Exception as e:
