@@ -1,0 +1,176 @@
+# 🧠 VAMP Agent — Visual AI Metadata Parser
+
+## Overview
+
+The **VAMP Agent** is a stealthy, browser-based deep content analysis tool that scrapes, reads, scores, and normalizes information from platforms like:
+- 📧 Outlook / Office365
+- ☁️ OneDrive
+- 🧾 Google Drive
+- 🌐 NextCloud
+- 🎓 eFundi LMS
+
+It uses **Playwright** for authenticated browser automation, **NWU Brain** for scoring extracted evidence, and a **WebSocket bridge** for frontend-extension integration.
+
+---
+
+## 🏗 System Architecture
+
+```txt
+Browser Extension ↔ ws_bridge.py ↔ vamp_agent.py ↔ NWU Brain (scoring) 
+                          ↑
+                 deepseek_client.py (Ollama)
+```
+
+---
+
+## 🚀 Features
+
+- 🔐 Uses live authenticated sessions (via persistent browser contexts)
+- 🧠 Full content scraping + keyword scoring
+- 📜 Auto-scroll & deep content extraction
+- 💾 Saves storage states (no repeated login)
+- 🔍 Works with Google, Microsoft, Sakai platforms
+- 🧰 Integrated with NWU's custom scoring engine
+- 🧱 Modular design: easy to extend per platform
+
+---
+
+## 🧪 Setup Instructions
+
+### 1. ✅ Prerequisites
+
+- Python 3.10+
+- Chrome installed (uses your live profile)
+- `Playwright` + browser dependencies installed
+
+### 2. 🛠 Install Requirements
+
+```bash
+pip install -r requirements.txt
+playwright install
+```
+
+### 3. 🧬 Set Environment Variables
+
+```powershell
+$env:DEEPSEEK_API_URL = "http://127.0.0.1:11434/v1/chat/completions"
+$env:DEEPSEEK_MODEL   = "gpt-oss:120b-cloud"
+```
+
+> These are used by `deepseek_client.py` to call your local Ollama LLM.
+
+---
+
+## 🧠 Usage
+
+### Start the backend WebSocket bridge:
+
+```bash
+python ws_bridge.py
+```
+
+It will:
+- Listen for frontend requests
+- Trigger scans via `run_scan_active`
+- Return scored, deduped results
+
+---
+
+## 💡 Example Scan Flow
+
+1. Frontend triggers `"scanActive"` with:
+   ```json
+   {
+     "action": "scanActive",
+     "email": "user@nwu.ac.za",
+     "url": "https://outlook.office365.com/mail/",
+     "year": 2025,
+     "month": 11
+   }
+   ```
+2. Backend invokes `run_scan_active(...)`
+3. Browser is launched and logs into Outlook using session state
+4. Emails are parsed, filtered, scored and returned to the frontend
+
+---
+
+## 🧪 Supported Platforms
+
+| Platform   | Status | Notes                             |
+|------------|--------|-----------------------------------|
+| Outlook    | ✅     | MFA/login handled manually first  |
+| OneDrive   | ✅     | Uses state restore for auth       |
+| GoogleDrive| ✅     | Uses persistent context           |
+| eFundi     | ✅     | No auth needed                    |
+| NextCloud  | ⚠️     | Placeholder - manual add required |
+
+---
+
+## 📁 Key Files
+
+| File               | Description                                 |
+|--------------------|---------------------------------------------|
+| `vamp_agent.py`    | Core scraping + Playwright automation       |
+| `ws_bridge.py`     | WebSocket bridge to frontend                |
+| `deepseek_client.py` | Client to LLM API via Ollama              |
+| `scoring.py`       | Loads NWU brain manifest + scoring logic    |
+| `*.json`           | Storage state, brain config, scoring rules  |
+
+---
+
+## 🧠 NWU Brain Scoring
+
+All extracted items are passed to the `NWUScorer` which assigns:
+
+- `kpa`: Key Performance Area
+- `tier`: Risk/priority tier
+- `score`: Numerical score
+- `band`: Banding (e.g. "Developing")
+- `policy_hits`: Keyword/policy matches
+
+---
+
+## 🛡 Authentication
+
+The system **does not use OAuth**.
+- Instead, it authenticates via **live Chrome profile**.
+- First-time use requires manual login in browser.
+- Persistent state is saved for reuse:
+  - `outlook_state.json`
+  - `onedrive_state.json`
+  - `drive_state.json`
+
+---
+
+## 🧰 Debugging Tips
+
+- ✅ Ensure `playwright install` is complete
+- ✅ Always launch with `python ws_bridge.py`
+- 🔒 Check for blocked browser login prompts
+- 🧪 Use `--headless=False` in `BROWSER_CONFIG` to see browser
+- 🧪 Logs appear in terminal: scan status, scoring feedback
+
+---
+
+## 🔧 Developer Tips
+
+- Modify `vamp_agent.py` to add new platforms
+- Adjust selectors in `scrape_*` functions
+- Use `logger.info()` to trace progress
+- Patch in `nwu_brain/` for updated policies or scoring
+
+---
+
+## 🧾 License
+
+Internal use only – NWU Research and Policy Development.
+
+---
+
+## 🧠 Credits
+
+Built with ❤️ using:
+- Microsoft Playwright
+- Python 3.10
+- Ollama LLM (DeepSeek-V2)
+- NWU’s brain.json and scoring logic
