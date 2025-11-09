@@ -426,16 +426,71 @@ def analyze_feedback_with_deepseek(
 import os
 import requests
 
-def ask_deepseek(prompt):
-    url = os.environ.get("DEEPSEEK_API_URL")
-    model = os.environ.get("DEEPSEEK_MODEL")
+
+def _requests_headers() -> Dict[str, str]:
+    """Mirror _headers() but for requests-based helpers."""
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def ask_deepseek(prompt: str) -> str:
+    """
+    Lightweight helper for single-turn prompts against a DeepSeek-compatible endpoint.
+
+    Unlike the higher-level helpers above this function is frequently used in scripts
+    and tooling, so we keep a very small surface area while still mirroring the
+    defensive behaviour (timeouts, auth headers, JSON validation) used elsewhere in
+    the module.
+    """
+
+    url = os.environ.get("DEEPSEEK_API_URL", DEEPSEEK_API_URL)
+    model = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL)
+
+    if not url:
+        return "(AI endpoint not configured)"
+
     payload = {
-        "model": model,
+        "model": model or "deepseek-reasoner",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
+        "temperature": 0.7,
     }
-    response = requests.post(url, json=payload)
-    return response.json()["choices"][0]["message"]["content"]
+
+    try:
+        response = requests.post(
+            url,
+            json=payload,
+            headers=_requests_headers(),
+            timeout=DEEPSEEK_TIMEOUT_S,
+        )
+    except requests.RequestException as exc:
+        return f"(AI error) {exc}"
+
+    if response.status_code >= 400:
+        detail = ""
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("error") or body.get("message") or json.dumps(body)
+            else:
+                detail = json.dumps(body)
+        except ValueError:
+            detail = response.text.strip()
+        detail = detail or "Request failed"
+        return f"(AI HTTP {response.status_code}) {detail}"
+
+    try:
+        data = response.json()
+    except ValueError:
+        return f"(AI error) Invalid JSON response (status {response.status_code})"
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        return "(AI error) Unexpected response format"
+
 
 def analyze_feedback_with_deepseek(prompt):
     return ask_deepseek(prompt)
