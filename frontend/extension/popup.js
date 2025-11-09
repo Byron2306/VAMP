@@ -10,6 +10,7 @@
     org:          $('org'),
     year:         $('year'),
     month:        $('month'),
+    scanUrl:      $('scanUrl'),
     askText:      $('askText'),
 
     btnEnrol:     $('btnEnrol'),
@@ -112,7 +113,7 @@
       els.btnFinalise, els.btnExport, els.btnCompile,
       els.btnAsk, els.btnAskFb, els.btnRefreshEvidence,
       els.btnViewDetails, els.btnClearEvidence,
-      els.wsUrl, els.email, els.name, els.org, els.year, els.month, els.askText
+      els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText
     ];
     
     controls.forEach(el => { 
@@ -358,6 +359,7 @@
   function saveSettings() {
     const obj = {
       wsUrl: els.wsUrl?.value?.trim() || wsUrlCurrent,
+      scanUrl: els.scanUrl?.value?.trim() || '',
       email: els.email?.value?.trim() || '',
       name:  els.name?.value?.trim()  || '',
       org:   els.org?.value?.trim()   || 'NWU',
@@ -374,6 +376,7 @@
       chrome.storage?.local?.get(['vamp_settings'], (res) => {
         const s = res?.vamp_settings || {};
         if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
+        if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
         if (els.email && s.email)  els.email.value = s.email;
         if (els.name  && s.name)   els.name.value  = s.name;
         if (els.org   && s.org)    els.org.value   = s.org;
@@ -717,6 +720,23 @@
     });
   }
 
+  async function resolveScanUrl() {
+    const manual = els.scanUrl?.value?.trim();
+    if (manual) {
+      logAnswer('Using manual scan URL from popup.', 'info');
+      return manual;
+    }
+
+    const active = await withActiveTabUrl();
+    if (active) {
+      logAnswer('Using URL from the active browser tab.', 'info');
+    }
+    if (!active) {
+      logAnswer('Active tab URL unavailable. Provide a Scan URL manually if needed.', 'warning');
+    }
+    return active;
+  }
+
   function getYearMonth() {
     const y = Number(els.year?.value || new Date().getFullYear());
     const m = Number(els.month?.value || (new Date().getMonth() + 1));
@@ -755,11 +775,17 @@
   async function onScanActive() {
     const s = currentSettings();
     const { year, month } = getYearMonth();
-    const activeUrl = await withActiveTabUrl();
+    const scanUrl = await resolveScanUrl();
 
     if (!s.email) {
       logAnswer('Please enter your email before scanning', 'error');
       els.email?.focus();
+      return;
+    }
+
+    if (!scanUrl) {
+      logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
+      setScanNote('Waiting for scan URL');
       return;
     }
 
@@ -774,7 +800,7 @@
 
     sendWS({
       action: 'SCAN_ACTIVE',
-      url: activeUrl,
+      url: scanUrl,
       deep_read: true,
       email: s.email,
       name:  s.name,
@@ -939,7 +965,7 @@
     });
 
     // Settings persistence
-    [els.wsUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
+    [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
       if (!el) return;
       const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
       el.addEventListener(evt, saveSettings);
