@@ -200,6 +200,11 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
         if existing is not None:
             try:
                 if not existing.is_closed():
+                    logger.info(
+                        "Reusing cached %s context with saved state for %s",
+                        service or "generic",
+                        identity or "default",
+                    )
                     return existing
             except Exception:
                 pass

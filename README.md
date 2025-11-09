@@ -57,6 +57,8 @@ VAMP/
 - 💾 Saves storage states (no repeated login)
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
+- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every DeepSeek/Ollama prompt
+- 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular design: easy to extend per platform
 
 ---
