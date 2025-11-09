@@ -12,26 +12,26 @@ import json
 import logging
 import os
 import traceback
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import websockets
 from websockets.server import WebSocketServerProtocol
 
-from vamp_store import VampStore, _uid
+from . import STORE_DIR
+from .vamp_store import VampStore, _uid
 
 # --- Import agent ---
 try:
-    from vamp_agent import run_scan_active
+    from .vamp_agent import run_scan_active
 except Exception as e:
     logging.error(f"Failed to import vamp_agent: {e}")
     run_scan_active = None
 
 # --- Configuration ---
-BASE_DIR = Path(__file__).resolve().parent
 APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.environ.get("APP_PORT", "8765"))
-store = VampStore(str(BASE_DIR / "data"))
+STORE_DIR.mkdir(parents=True, exist_ok=True)
+store = VampStore(str(STORE_DIR))
 
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s",

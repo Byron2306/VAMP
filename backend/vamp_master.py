@@ -70,14 +70,15 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # Paths & Brain scaffolding
 # -------------------------
 
-ROOT_DIR = Path(__file__).resolve().parent
-BRAIN_DIR = ROOT_DIR / "nwu_brain"
-MANIFEST_PATH = BRAIN_DIR / "brain_manifest.json"
+from . import BRAIN_DATA_DIR
+from .nwu_brain.scoring import NWUScorer
 
-try:
-    from nwu_brain.scoring import NWUScorer  # type: ignore
-except Exception as e:
-    raise RuntimeError("nwu_brain.scoring.NWUScorer is required by vamp_master") from e
+# -------------------------
+# Paths & Brain scaffolding
+# -------------------------
+
+ROOT_DIR = Path(__file__).resolve().parent
+MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 if not MANIFEST_PATH.is_file():
     raise FileNotFoundError(f"Brain manifest not found: {MANIFEST_PATH}")
@@ -438,8 +439,8 @@ def scan_and_score(evidence_root: Path,
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="VAMP Monthly Scanner (NWU Brain–aligned)")
-    p.add_argument("--root", type=str, default=str(ROOT_DIR / "VAMP"),
-                   help="Evidence root folder (default: ./VAMP next to this script)")
+    p.add_argument("--root", type=str, default=str(ROOT_DIR.parent),
+                   help="Evidence root folder (default: repository root)")
     p.add_argument("--year", type=int, default=datetime.datetime.now().year,
                    help="Assessment year (default: current year)")
     p.add_argument("--month", type=int, default=datetime.datetime.now().month,

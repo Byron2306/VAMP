@@ -14,19 +14,19 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
 
+from . import BRAIN_DATA_DIR, STATE_DIR
+from .nwu_brain.scoring import NWUScorer
+
 # --------------------------------------------------------------------------------------
 # Constants / Globals
 # --------------------------------------------------------------------------------------
 
-ROOT = Path(__file__).resolve().parent
-BRAIN_DIR = ROOT / "nwu_brain"
-MANIFEST_PATH = BRAIN_DIR / "brain_manifest.json"
+MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
@@ -64,11 +64,13 @@ _CTX = None
 _PAGES: Dict[str, Any] = {}
 
 # Service-specific storage state paths and URLs
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+
 STATE_PATHS = {
-    "outlook": ROOT / "outlook_state.json",
-    "onedrive": ROOT / "onedrive_state.json",
-    "drive": ROOT / "drive_state.json",
-    # Add for Nextcloud if implemented: "nextcloud": ROOT / "nextcloud_state.json"
+    "outlook": STATE_DIR / "outlook_state.json",
+    "onedrive": STATE_DIR / "onedrive_state.json",
+    "drive": STATE_DIR / "drive_state.json",
+    # Add for Nextcloud if implemented: "nextcloud": STATE_DIR / "nextcloud_state.json"
 }
 
 SERVICE_URLS = {
@@ -80,7 +82,6 @@ SERVICE_URLS = {
 
 # NWU Brain scorer
 try:
-    from nwu_brain.scoring import NWUScorer  # type: ignore
     if not MANIFEST_PATH.is_file():
         raise FileNotFoundError(f"Brain manifest not found: {MANIFEST_PATH}")
     SCORER = NWUScorer(str(MANIFEST_PATH))

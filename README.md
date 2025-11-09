@@ -16,9 +16,35 @@ It uses **Playwright** for authenticated browser automation, **NWU Brain** for s
 ## 🏗 System Architecture
 
 ```txt
-Browser Extension ↔ ws_bridge.py ↔ vamp_agent.py ↔ NWU Brain (scoring) 
+Browser Extension ↔ backend.ws_bridge ↔ backend.vamp_agent ↔ NWU Brain (scoring)
                           ↑
-                 deepseek_client.py (Ollama)
+                 backend.deepseek_client (Ollama)
+```
+
+---
+
+## 📂 Repository Layout
+
+```
+VAMP/
+├── README.md
+├── backend/                   # Python backend package
+│   ├── data/
+│   │   ├── nwu_brain/         # Scoring manifest + policy knowledge base
+│   │   ├── states/            # Browser storage state (created at runtime)
+│   │   └── store/             # User evidence store (created at runtime)
+│   ├── nwu_brain/             # NWU scorer implementation
+│   ├── deepseek_client.py
+│   ├── vamp_agent.py
+│   ├── vamp_master.py
+│   ├── vamp_runner.py
+│   ├── vamp_store.py
+│   └── ws_bridge.py
+├── frontend/
+│   └── extension/             # Chrome extension source (incl. icons/, sounds/)
+├── requirements.txt
+└── scripts/
+    └── setup_backend.ps1
 ```
 
 ---
@@ -66,13 +92,15 @@ $env:DEEPSEEK_MODEL   = "gpt-oss:120b-cloud"
 ### Start the backend WebSocket bridge:
 
 ```bash
-python ws_bridge.py
+python -m backend.ws_bridge
 ```
 
 It will:
 - Listen for frontend requests
 - Trigger scans via `run_scan_active`
 - Return scored, deduped results
+
+> Runtime data (Chrome storage states and evidence store) is written to `backend/data/states/` and `backend/data/store/`.
 
 ---
 
@@ -108,13 +136,15 @@ It will:
 
 ## 📁 Key Files
 
-| File               | Description                                 |
-|--------------------|---------------------------------------------|
-| `vamp_agent.py`    | Core scraping + Playwright automation       |
-| `ws_bridge.py`     | WebSocket bridge to frontend                |
-| `deepseek_client.py` | Client to LLM API via Ollama              |
-| `scoring.py`       | Loads NWU brain manifest + scoring logic    |
-| `*.json`           | Storage state, brain config, scoring rules  |
+| File / Folder                        | Description                                 |
+|--------------------------------------|---------------------------------------------|
+| `backend/vamp_agent.py`              | Core scraping + Playwright automation       |
+| `backend/ws_bridge.py`               | WebSocket bridge to frontend                |
+| `backend/deepseek_client.py`         | Client to LLM API via Ollama                |
+| `backend/nwu_brain/scoring.py`       | Loads NWU brain manifest + scoring logic    |
+| `backend/data/nwu_brain/*.json`      | Manifest, policy registry, routing rules    |
+| `backend/data/states/`               | Chrome storage states (generated at runtime)|
+| `backend/data/store/`                | Evidence store per user (generated)         |
 
 ---
 
@@ -145,7 +175,7 @@ The system **does not use OAuth**.
 ## 🧰 Debugging Tips
 
 - ✅ Ensure `playwright install` is complete
-- ✅ Always launch with `python ws_bridge.py`
+- ✅ Always launch with `python -m backend.ws_bridge`
 - 🔒 Check for blocked browser login prompts
 - 🧪 Use `--headless=False` in `BROWSER_CONFIG` to see browser
 - 🧪 Logs appear in terminal: scan status, scoring feedback
@@ -154,10 +184,10 @@ The system **does not use OAuth**.
 
 ## 🔧 Developer Tips
 
-- Modify `vamp_agent.py` to add new platforms
+- Modify `backend/vamp_agent.py` to add new platforms
 - Adjust selectors in `scrape_*` functions
 - Use `logger.info()` to trace progress
-- Patch in `nwu_brain/` for updated policies or scoring
+- Patch in `backend/data/nwu_brain/` for updated policies or scoring
 
 ---
 

@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import urllib.request
@@ -54,16 +53,11 @@ import urllib.error
 # Paths & bootstrap
 # --------------------------------------------------------------------------------------
 
-BASE_DIR = Path(__file__).resolve().parent
-BRAIN_DIR = BASE_DIR / "nwu_brain"
-MANIFEST_PATH = BRAIN_DIR / "brain_manifest.json"
-SYSTEM_PROMPT_PATH = BRAIN_DIR / "system_nwu.txt"
+from . import BRAIN_DATA_DIR
+from .nwu_brain.scoring import NWUScorer
 
-# Load NWUScorer
-try:
-    from nwu_brain.scoring import NWUScorer  # type: ignore
-except Exception as e:
-    raise RuntimeError("nwu_brain.scoring.NWUScorer must be importable for deepseek_client") from e
+MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
+SYSTEM_PROMPT_PATH = BRAIN_DATA_DIR / "system_nwu.txt"
 
 if not MANIFEST_PATH.is_file():
     raise FileNotFoundError(f"Brain manifest not found: {MANIFEST_PATH}")
