@@ -522,14 +522,15 @@
   // ---------- Enhanced Message Handling ----------
   function handleMessage(raw) {
     let msg = null;
-    try { 
-      msg = JSON.parse(raw); 
-    } catch { 
+    try {
+      msg = JSON.parse(raw);
+    } catch {
       logAnswer('Invalid message received', 'error');
-      return; 
+      return;
     }
-    
+
     const action = msg.action || '';
+    const data = (msg.data && typeof msg.data === 'object') ? msg.data : {};
 
     if (msg.ok === false) {
       setScanNote(`Error: ${msg.error || 'Unknown error'}`);
@@ -567,37 +568,38 @@
       }
       
       case 'SCAN_ACTIVE/PROGRESS': {
-        const pct = typeof msg.pct === 'number' ? msg.pct : (Number(msg.progress || 0) * 100);
-        const note = msg.note || msg.phase || '';
+        const pct = typeof data.pct === 'number' ? data.pct : (Number(data.progress || 0) * 100);
+        const note = data.note || data.status || data.phase || '';
         lastPct = Math.max(5, Math.min(95, Number(pct) || 0));
-        lastPhase = String(msg.phase || 'progress');
+        lastPhase = String(data.phase || 'progress');
         setProgressPct(lastPct);
         setScanNote(note);
         break;
       }
-      
+
       case 'PROGRESS': {
-        const pct = Math.max(5, Math.min(95, (Number(msg.percent || 0) || 0) * 100));
+        const pctRaw = (typeof data.percent === 'number') ? data.percent : msg.percent;
+        const pct = Math.max(5, Math.min(95, (Number(pctRaw || 0) || 0) * 100));
         lastPct = pct;
         setProgressPct(pct);
-        setScanNote(msg.note || 'Processing...');
+        setScanNote(data.note || msg.note || 'Processing...');
         break;
       }
-      
+
       case 'BATCH': {
-        const c = Number(msg.count || 0);
+        const c = Number(data.count || msg.count || 0);
         setScanNote(`Processed ${c} Office365 items...`);
         logAnswer(`📦 Batch processed: ${c} Office365 items`, 'info');
         break;
       }
-      
+
       case 'SCAN_ACTIVE/COMPLETE': {
         isBusy = false;
         lastPhase = 'store';
         lastPct = 100;
         setProgressPct(100);
-        const added = msg.added || 0;
-        const total = msg.total_evidence || 0;
+        const added = data.added || msg.added || 0;
+        const total = data.total_evidence || data.total || msg.total_evidence || 0;
         setScanNote(`Complete - ${added} new items, ${total} total`);
         logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
         enableControls(true);
@@ -616,7 +618,7 @@
         lastPhase = 'store';
         lastPct = 100;
         setProgressPct(100);
-        setScanNote('Office365 scan completed');
+        setScanNote(data.note || 'Office365 scan completed');
         logAnswer('✅ Office365 scan finished', 'success');
         enableControls(true);
         setStatus('Connected', 'connected');
@@ -629,8 +631,9 @@
       }
 
       case 'GET_STATE': {
-        if (msg.year_doc && msg.year_doc.months) {
-          const evidenceItems = extractEvidenceFromYearDoc(msg.year_doc);
+        const yearDoc = data.year_doc || msg.year_doc;
+        if (yearDoc && yearDoc.months) {
+          const evidenceItems = extractEvidenceFromYearDoc(yearDoc);
           updateEvidenceDisplay(evidenceItems);
           logAnswer(`📊 Loaded ${evidenceItems.length} evidence items from storage`, 'success');
         }
@@ -639,15 +642,15 @@
 
       // Chat responses
       case 'ASK': {
-        const answer = (msg.answer || '').toString();
+        const answer = (data.answer || msg.answer || '').toString();
         if (answer) logAnswer(`🧠 ${answer}`, 'info');
         enableControls(true);
         setStatus('Connected', 'connected');
         break;
       }
-      
+
       case 'ASK_FEEDBACK': {
-        const answer = (msg.answer || '').toString();
+        const answer = (data.answer || msg.answer || '').toString();
         if (answer) logAnswer(`📋 ${answer}`, 'info');
         enableControls(true);
         setStatus('Connected', 'connected');
@@ -655,24 +658,25 @@
       }
 
       // Other actions
-      case 'ENROL':          
-        logAnswer('👤 Profile enrolled successfully', 'success'); 
+      case 'ENROL':
+        logAnswer('👤 Profile enrolled successfully', 'success');
         break;
-      case 'GET_STATE':      
-        logAnswer('📊 Current state retrieved', 'success'); 
+      case 'FINALISE_MONTH':
+        logAnswer('🔒 Month finalized and locked', 'success');
         break;
-      case 'FINALISE_MONTH': 
-        logAnswer('🔒 Month finalized and locked', 'success'); 
+      case 'EXPORT_MONTH':
+        logAnswer(`📁 CSV exported: ${data.path || msg.path || 'Unknown location'}`, 'success');
         break;
-      case 'EXPORT_MONTH':   
-        logAnswer(`📁 CSV exported: ${msg.path || 'Unknown location'}`, 'success'); 
-        break;
-      case 'COMPILE_YEAR':   
-        logAnswer(`📊 Year CSV compiled: ${msg.path || 'Unknown location'}`, 'success'); 
+      case 'COMPILE_YEAR':
+        logAnswer(`📊 Year CSV compiled: ${data.path || msg.path || 'Unknown location'}`, 'success');
         break;
 
       default:
-        if (action) logAnswer(`ℹ️ ${action}`, 'info');
+        if (action) {
+          const detail = data.message || data.status || msg.message || '';
+          const suffix = detail ? ` — ${detail}` : '';
+          logAnswer(`ℹ️ ${action}${suffix}`, 'info');
+        }
         break;
     }
   }
