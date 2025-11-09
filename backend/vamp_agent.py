@@ -33,6 +33,7 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
+    "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
     "headless": True,
     "slow_mo": 0,
     "args": [
@@ -171,6 +172,8 @@ async def get_authenticated_context(service: str) -> Any:
 
         state_path = STATE_PATHS.get(service)
         context_kwargs = _base_context_kwargs()
+
+        await _ensure_storage_state(service, state_path)
 
         if state_path and state_path.exists():
             context_kwargs['storage_state'] = str(state_path)
