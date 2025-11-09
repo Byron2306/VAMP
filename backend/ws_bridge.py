@@ -22,10 +22,10 @@ from .vamp_store import VampStore, _uid
 
 # --- Import agent ---
 try:
-    from .vamp_agent import run_scan_active
+    from .vamp_agent import run_scan_active_ws
 except Exception as e:
     logging.error(f"Failed to import vamp_agent: {e}")
-    run_scan_active = None
+    run_scan_active_ws = None
 
 # --- Configuration ---
 APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
@@ -120,7 +120,7 @@ async def on_compile_year(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
 
 
 async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
-    if run_scan_active is None:
+    if run_scan_active_ws is None:
         await ws.send(fail("SCAN_ACTIVE", "vamp_agent not available"))
         return
 
@@ -146,7 +146,7 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
             pass  # Client may disconnect
 
     try:
-        results = await run_scan_active(
+        results = await run_scan_active_ws(
             email=email or uid,
             year=year,
             month=month,
