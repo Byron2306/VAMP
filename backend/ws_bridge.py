@@ -16,7 +16,10 @@ from functools import partial
 from typing import Any, Dict, Optional
 
 import websockets
-from websockets.server import WebSocketServerProtocol
+try:  # websockets >= 10
+    from websockets.server import WebSocketServerProtocol
+except ImportError:  # Compatibility for older deployments
+    from websockets.legacy.server import WebSocketServerProtocol  # type: ignore
 
 from . import STORE_DIR
 from .vamp_store import VampStore, _uid
