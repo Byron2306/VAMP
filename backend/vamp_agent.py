@@ -9,12 +9,13 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+import inspect
 import json
 import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
@@ -197,6 +198,67 @@ async def apply_stealth(context: Any) -> None:
 # --------------------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------------------
+
+async def _maybe_await(result: Any) -> None:
+    """Await the result if it is awaitable."""
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _score_and_batch(
+    items: List[Dict[str, Any]],
+    sink: Callable[[List[Dict[str, Any]]], Any],
+    on_progress: Optional[Callable[[float, str], Any]] = None,
+    batch_size: int = 25,
+) -> None:
+    """Score items using the NWU brain and flush in batches via sink."""
+
+    if not items:
+        return
+
+    total = len(items)
+    pending: List[Dict[str, Any]] = []
+
+    for idx, item in enumerate(items, start=1):
+        title = item.get("title") or item.get("path") or ""
+        platform = item.get("platform") or item.get("source") or ""
+        timestamp = item.get("timestamp") or item.get("date") or item.get("modified") or ""
+
+        item.setdefault("title", title)
+        item.setdefault("source", platform or item.get("source") or "")
+        item.setdefault("platform", platform)
+        item.setdefault("path", item.get("path") or title)
+        item.setdefault("relpath", item.get("relpath") or item.get("path") or title)
+        if timestamp:
+            item.setdefault("date", timestamp)
+            item.setdefault("modified", timestamp)
+
+        try:
+            scored = SCORER.compute(item)
+            item.update(scored)
+            item["_scored"] = True
+        except Exception as exc:
+            logger.warning(f"Scoring failed for item {title or '[unnamed]'}: {exc}")
+            item.setdefault("_scored", False)
+
+        pending.append(item)
+
+        if len(pending) >= batch_size:
+            try:
+                await _maybe_await(sink(list(pending)))
+            finally:
+                pending.clear()
+
+        if on_progress:
+            progress = 40 + (50 * (idx / total))
+            capped = min(90, progress)
+            await on_progress(capped, f"Scoring items ({idx}/{total})")
+
+    if pending:
+        await _maybe_await(sink(list(pending)))
+
+    if on_progress:
+        await on_progress(90, "Scoring complete")
 
 async def _soft_scroll(page: Any, times: int = 5, delay: int = 500) -> None:
     """Smooth scroll to trigger lazy loading."""
