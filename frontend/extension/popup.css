@@ -261,12 +261,21 @@ body.vamp-popup::before {
 .ask-input:focus,
 .row select:focus {
   border-color: var(--red);
-  box-shadow: 
+  box-shadow:
     inset 0 2px 8px rgba(0,0,0,0.6),
     0 0 0 3px rgba(255, 42, 42, 0.15),
     var(--red-glow);
   background: #0a0a0a;
   transform: translateY(-1px);
+}
+
+.hint {
+  margin: -8px 0 16px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+  font-family: "IM Fell English", serif;
+  max-width: 100%;
 }
 
 /* Enhanced Buttons - Professional Gothic */
