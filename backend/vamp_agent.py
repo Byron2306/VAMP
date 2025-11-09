@@ -58,6 +58,22 @@ BROWSER_CONFIG = {
     ]
 }
 
+# Optional credential-based automation (service -> env var names)
+SERVICE_CREDENTIAL_ENV = {
+    "outlook": {
+        "username": os.getenv("VAMP_OUTLOOK_USERNAME", "").strip(),
+        "password": os.getenv("VAMP_OUTLOOK_PASSWORD", "").strip(),
+    },
+    "onedrive": {
+        "username": os.getenv("VAMP_ONEDRIVE_USERNAME", "").strip(),
+        "password": os.getenv("VAMP_ONEDRIVE_PASSWORD", "").strip(),
+    },
+    "drive": {
+        "username": os.getenv("VAMP_GOOGLE_USERNAME", "").strip(),
+        "password": os.getenv("VAMP_GOOGLE_PASSWORD", "").strip(),
+    },
+}
+
 # User agent that looks like a real browser
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
 
@@ -184,6 +200,11 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
         if existing is not None:
             try:
                 if not existing.is_closed():
+                    logger.info(
+                        "Reusing cached %s context with saved state for %s",
+                        service or "generic",
+                        identity or "default",
+                    )
                     return existing
             except Exception:
                 pass
@@ -196,6 +217,7 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
 
         if state_path and state_path.exists():
             context_kwargs['storage_state'] = str(state_path)
+            logger.info("Using %s storage state from %s", service, state_path)
 
         context = await _BROWSER.new_context(**context_kwargs)
 
@@ -242,6 +264,111 @@ async def apply_stealth(context: Any) -> None:
         Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
         Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
     """)
+
+
+def _credentials_for(service: Optional[str], identity: Optional[str]) -> Optional[Tuple[str, str]]:
+    if not service:
+        return None
+
+    service_conf = SERVICE_CREDENTIAL_ENV.get(service, {})
+    username = service_conf.get("username") or (identity or "").strip()
+    password = service_conf.get("password")
+
+    if username and password:
+        return username, password
+
+    logger.debug("No credentials available for automated %s login", service)
+    return None
+
+
+async def _automated_login(service: Optional[str], identity: Optional[str], state_path: Optional[Path]) -> bool:
+    """Attempt a fully headless login when credentials are configured."""
+
+    if not service or not state_path:
+        return False
+
+    if _BROWSER is None:
+        return False
+
+    creds = _credentials_for(service, identity)
+    if not creds:
+        return False
+
+    username, password = creds
+    url = SERVICE_URLS.get(service)
+    if not url:
+        return False
+
+    login_context = await _BROWSER.new_context(**_base_context_kwargs())
+    page = None
+    try:
+        await apply_stealth(login_context)
+        page = await login_context.new_page()
+        await page.goto(url, wait_until="load", timeout=60000)
+
+        if service == "outlook":
+            await page.wait_for_selector('input[name="loginfmt"]', timeout=30000)
+            await page.fill('input[name="loginfmt"]', username)
+            await page.click('input[type="submit"]#idSIButton9')
+
+            await page.wait_for_selector('input[name="passwd"]', timeout=30000)
+            await page.fill('input[name="passwd"]', password)
+            await page.click('input[type="submit"]#idSIButton9')
+
+            try:
+                await page.wait_for_selector('input[id="idBtn_Back"]', timeout=5000)
+                await page.click('input[id="idBtn_Back"]')
+            except PWTimeout:
+                pass
+
+            await page.wait_for_selector('[role="navigation"], [aria-label="Mail"]', timeout=60000)
+        elif service == "onedrive":
+            await page.wait_for_selector('input[name="loginfmt"]', timeout=30000)
+            await page.fill('input[name="loginfmt"]', username)
+            await page.click('input[type="submit"]#idSIButton9')
+
+            await page.wait_for_selector('input[name="passwd"]', timeout=30000)
+            await page.fill('input[name="passwd"]', password)
+            await page.click('input[type="submit"]#idSIButton9')
+
+            try:
+                await page.wait_for_selector('input[id="idBtn_Back"]', timeout=5000)
+                await page.click('input[id="idBtn_Back"]')
+            except PWTimeout:
+                pass
+
+            await page.wait_for_selector('[role="main"], [data-automationid="TopBar"]', timeout=60000)
+        elif service == "drive":
+            await page.wait_for_selector('input[type="email"]', timeout=30000)
+            await page.fill('input[type="email"]', username)
+            await page.click('#identifierNext')
+
+            await page.wait_for_selector('input[type="password"]', timeout=30000)
+            await page.fill('input[type="password"]', password)
+            await page.click('#passwordNext')
+
+            await page.wait_for_selector('[role="main"], [data-id="my-drive"]', timeout=60000)
+        else:
+            logger.debug("Automated login not implemented for %s", service)
+            return False
+
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        await login_context.storage_state(path=str(state_path))
+        logger.info("Captured %s storage state automatically (headless).", service)
+        return True
+    except Exception as exc:
+        logger.error("Automated login for %s failed: %s", service, exc)
+        return False
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        try:
+            await login_context.close()
+        except Exception:
+            pass
 
 
 async def _prompt_manual_login(context: Any, service: str, state_path: Path, identity: Optional[str]) -> None:
@@ -293,6 +420,15 @@ async def _ensure_storage_state(service: Optional[str], state_path: Optional[Pat
         return
 
     if state_path.exists():
+        return
+
+    try:
+        automated = await _automated_login(service, identity, state_path)
+    except Exception as exc:
+        logger.error("Automated login attempt for %s crashed: %s", service, exc)
+        automated = False
+
+    if automated and state_path.exists():
         return
 
     if not BROWSER_CONFIG.get("headless", True):
@@ -652,9 +788,11 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         items = await scrape_drive(page, month_bounds)
     elif service == "efundi":
         items = await scrape_efundi(page, month_bounds)
-    
+
     await page.close()
-    
+
+    logger.info("Scraped %d %s items from %s", len(items), service or "unknown", url)
+
     if on_progress:
         await on_progress(40, "Processing items...")
 

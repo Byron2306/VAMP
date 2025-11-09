@@ -53,6 +53,9 @@ import urllib.error
 # Paths & bootstrap
 # --------------------------------------------------------------------------------------
 
+from functools import lru_cache
+from pathlib import Path
+
 from . import BRAIN_DATA_DIR
 from .nwu_brain.scoring import NWUScorer
 
@@ -64,12 +67,58 @@ if not MANIFEST_PATH.is_file():
 
 SCORER = NWUScorer(str(MANIFEST_PATH))
 
+
+def _read_text_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+
+
+def _render_json_file(path: Path) -> str:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        return json.dumps(parsed, ensure_ascii=False, indent=2)
+    except Exception:
+        return _read_text_file(path)
+
+
+@lru_cache(maxsize=1)
+def _brain_corpus() -> str:
+    """Combine every NWU brain asset into a single, labelled corpus string."""
+
+    sections = []
+
+    if SYSTEM_PROMPT_PATH.exists():
+        sections.append(("system_nwu.txt", _read_text_file(SYSTEM_PROMPT_PATH)))
+
+    for path in sorted(BRAIN_DATA_DIR.glob("*")):
+        if path == SYSTEM_PROMPT_PATH:
+            continue
+        if not path.is_file():
+            continue
+
+        suffix = path.suffix.lower()
+        if suffix in {".json"}:
+            rendered = _render_json_file(path)
+        else:
+            rendered = _read_text_file(path)
+
+        if rendered:
+            sections.append((path.name, rendered))
+
+    if not sections:
+        return "You are VAMP — use canonical NWU Brain outputs. Cite matched rules/phrases and canonical policy IDs."
+
+    formatted = []
+    for name, content in sections:
+        formatted.append(f"[[[{name}]]]\n{content}".strip())
+
+    return "\n\n".join(formatted).strip()
+
+
 # Strict system prompt (fallback if file missing)
-SYSTEM_PROMPT = (
-    SYSTEM_PROMPT_PATH.read_text(encoding="utf-8").strip()
-    if SYSTEM_PROMPT_PATH.exists()
-    else "You are VAMP — use canonical NWU Brain outputs. Cite matched rules/phrases and canonical policy IDs."
-)
+SYSTEM_PROMPT = _brain_corpus()
 
 # --------------------------------------------------------------------------------------
 # HTTP configuration
@@ -451,6 +500,16 @@ def _requests_headers(is_ollama: bool = False) -> Dict[str, str]:
     return headers
 
 
+def _format_prompt_with_system(user_prompt: str) -> str:
+    """Utility for single-string LLM interfaces (e.g., Ollama /api/generate)."""
+    user_prompt = (user_prompt or "").strip()
+    if not SYSTEM_PROMPT:
+        return user_prompt
+    if not user_prompt:
+        return SYSTEM_PROMPT
+    return f"{SYSTEM_PROMPT}\n\nUser:\n{user_prompt}\n\nVAMP:".strip()
+
+
 def ask_deepseek(prompt: str) -> str:
     """
     Lightweight helper for single-turn prompts against a DeepSeek-compatible endpoint.
@@ -472,22 +531,31 @@ def ask_deepseek(prompt: str) -> str:
     is_ollama_generate = "/api/generate" in url
     is_ollama = is_ollama_chat or is_ollama_generate or "ollama" in url.lower()
 
+    system_prompt = SYSTEM_PROMPT
+    user_message = (prompt or "").strip()
+
     if is_ollama_generate:
         payload = {
             "model": model or "gpt-oss:120b",
-            "prompt": prompt,
+            "prompt": _format_prompt_with_system(user_message),
             "stream": False,
         }
     elif is_ollama_chat:
         payload = {
             "model": model or "gpt-oss:120b",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
             "stream": False,
         }
     else:
         payload = {
             "model": model or "deepseek-reasoner",
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
             "temperature": 0.7,
         }
 

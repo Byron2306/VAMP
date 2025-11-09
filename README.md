@@ -57,6 +57,8 @@ VAMP/
 - 💾 Saves storage states (no repeated login)
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
+- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every DeepSeek/Ollama prompt
+- 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular design: easy to extend per platform
 
 ---
@@ -89,6 +91,21 @@ $env:OLLAMA_API_KEY   = "<token>"
 ```
 
 > `deepseek_client.py` will automatically detect Ollama-style endpoints (`/api/chat` or `/api/generate`) and adjust the payload/headers. If you only set the Ollama variables, the DeepSeek defaults are ignored.
+
+### Headless Outlook / OneDrive / Google Drive login
+
+To keep Chromium hidden while still authenticating, provide service credentials via environment variables before starting the backend:
+
+```bash
+export VAMP_OUTLOOK_USERNAME="user@nwu.ac.za"
+export VAMP_OUTLOOK_PASSWORD="<app-password-or-sso-secret>"
+export VAMP_ONEDRIVE_USERNAME="user@nwu.ac.za"   # optional, defaults to email argument
+export VAMP_ONEDRIVE_PASSWORD="<password>"
+export VAMP_GOOGLE_USERNAME="user@nwu.ac.za"
+export VAMP_GOOGLE_PASSWORD="<password>"
+```
+
+When these are present the Playwright agent attempts a full headless login, captures a persistent storage state, and skips the manual Chromium window entirely. If the automated login fails or credentials are omitted the previous interactive flow is used as a fallback.
 
 ---
 
