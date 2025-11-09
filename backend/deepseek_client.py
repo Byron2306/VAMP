@@ -81,6 +81,12 @@ DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner").strip()
 DEEPSEEK_TIMEOUT_S = int(os.getenv("DEEPSEEK_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
 
+# Optional Ollama-compatible overrides
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+OLLAMA_API_KEY_HEADER = os.getenv("OLLAMA_API_KEY_HEADER", "Authorization").strip() or "Authorization"
+
 # --------------------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------------------
@@ -427,12 +433,21 @@ import os
 import requests
 
 
-def _requests_headers() -> Dict[str, str]:
+def _requests_headers(is_ollama: bool = False) -> Dict[str, str]:
     """Mirror _headers() but for requests-based helpers."""
     headers = {"Content-Type": "application/json"}
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_API_KEY).strip()
+    if is_ollama:
+        api_key = os.environ.get("OLLAMA_API_KEY", OLLAMA_API_KEY).strip() or api_key
+
     if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+        header_name = OLLAMA_API_KEY_HEADER if is_ollama else "Authorization"
+        if header_name.lower() == "authorization" and not api_key.lower().startswith("bearer "):
+            headers[header_name] = f"Bearer {api_key}"
+        else:
+            headers[header_name] = api_key
+
     return headers
 
 
@@ -446,23 +461,41 @@ def ask_deepseek(prompt: str) -> str:
     the module.
     """
 
-    url = os.environ.get("DEEPSEEK_API_URL", DEEPSEEK_API_URL)
-    model = os.environ.get("DEEPSEEK_MODEL", DEEPSEEK_MODEL)
+    env_url = os.environ.get("DEEPSEEK_API_URL") or os.environ.get("OLLAMA_API_URL")
+    url = (env_url or DEEPSEEK_API_URL).strip()
+    model = (os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OLLAMA_MODEL") or DEEPSEEK_MODEL or "deepseek-reasoner").strip()
 
     if not url:
         return "(AI endpoint not configured)"
 
-    payload = {
-        "model": model or "deepseek-reasoner",
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7,
-    }
+    is_ollama_chat = "/api/chat" in url
+    is_ollama_generate = "/api/generate" in url
+    is_ollama = is_ollama_chat or is_ollama_generate or "ollama" in url.lower()
+
+    if is_ollama_generate:
+        payload = {
+            "model": model or "gpt-oss:120b",
+            "prompt": prompt,
+            "stream": False,
+        }
+    elif is_ollama_chat:
+        payload = {
+            "model": model or "gpt-oss:120b",
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+        }
+    else:
+        payload = {
+            "model": model or "deepseek-reasoner",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.7,
+        }
 
     try:
         response = requests.post(
             url,
             json=payload,
-            headers=_requests_headers(),
+            headers=_requests_headers(is_ollama=is_ollama),
             timeout=DEEPSEEK_TIMEOUT_S,
         )
     except requests.RequestException as exc:
@@ -485,6 +518,26 @@ def ask_deepseek(prompt: str) -> str:
         data = response.json()
     except ValueError:
         return f"(AI error) Invalid JSON response (status {response.status_code})"
+
+    if is_ollama_generate:
+        text = data.get("response") if isinstance(data, dict) else None
+        return text or "(AI error) Unexpected Ollama generate response"
+
+    if is_ollama_chat:
+        if isinstance(data, dict):
+            message = data.get("message") or {}
+            if isinstance(message, dict):
+                text = message.get("content")
+                if text:
+                    return text
+            # Some Ollama gateways return OpenAI-style choices
+            choices = data.get("choices")
+            if isinstance(choices, list) and choices:
+                try:
+                    return choices[0]["message"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    pass
+        return "(AI error) Unexpected Ollama chat response"
 
     try:
         return data["choices"][0]["message"]["content"]
