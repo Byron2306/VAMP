@@ -34,6 +34,7 @@ MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
     "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
+    "headless": True,
     "slow_mo": 0,
     "args": [
         '--disable-web-security',
@@ -138,6 +139,21 @@ async def ensure_browser() -> None:
     _PLAYWRIGHT = await async_playwright().start()
     _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
 
+def _base_context_kwargs() -> Dict[str, Any]:
+    return {
+        'viewport': {'width': 1280, 'height': 800},
+        'user_agent': USER_AGENT,
+        'extra_http_headers': {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+        }
+    }
+
+
 async def get_authenticated_context(service: str) -> Any:
     """Get or create an authenticated context using storage state."""
     await ensure_browser()
@@ -163,6 +179,33 @@ async def get_authenticated_context(service: str) -> Any:
             context_kwargs['storage_state'] = str(state_path)
 
         context = await _BROWSER.new_context(**context_kwargs)
+
+        if state_path and not state_path.exists():
+            if BROWSER_CONFIG.get("headless", True):
+                await context.close()
+                raise RuntimeError(
+                    f"Storage state for {service} not found at {state_path}. "
+                    "Headless mode requires a pre-authenticated storage_state file."
+                )
+
+            logger.info(f"No storage state found for {service}. Prompting manual login...")
+            page = await context.new_page()
+            await page.goto(SERVICE_URLS[service])
+
+            login_selector = {
+                "outlook": 'input[name="loginfmt"]',
+                "onedrive": 'input[name="loginfmt"]',
+                "drive": 'input[type="email"]',
+            }.get(service)
+
+            if login_selector:
+                input("Please complete login in the browser window, then press Enter here...")
+                await context.storage_state(path=str(state_path))
+            else:
+                logger.warning(f"No login selector for {service}; skipping state save.")
+
+            await page.close()
+
         await apply_stealth(context)
         _SERVICE_CONTEXTS[key] = context
         return context
@@ -552,24 +595,17 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     if on_progress:
         await on_progress(10, f"Authenticating to {service}...")
     
-    if service in ["outlook", "onedrive", "drive"]:
-        context = await get_authenticated_context(service)
-    else:
-        context = await _BROWSER.new_context(
-            viewport={'width': 1280, 'height': 800},
-            user_agent=USER_AGENT,
-            extra_http_headers={
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-            }
-        )
-    
-    await apply_stealth(context)
-    
+    try:
+        if service in ["outlook", "onedrive", "drive"]:
+            context = await get_authenticated_context(service)
+        else:
+            context = await get_authenticated_context(service or "generic")
+    except Exception as e:
+        logger.error(f"Context error: {e}")
+        if on_progress:
+            await on_progress(0, f"Authentication failed: {e}")
+        return []
+
     page = await context.new_page()
     
     if on_progress:
@@ -596,7 +632,6 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
         items = await scrape_efundi(page, month_bounds)
     
     await page.close()
-    await context.close()
     
     if on_progress:
         await on_progress(40, "Processing items...")
