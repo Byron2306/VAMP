@@ -421,21 +421,3 @@ def analyze_feedback_with_deepseek(
             } for q in questions or []],
             "notes": ""
         }
-
-
-import os
-import requests
-
-def ask_deepseek(prompt):
-    url = os.environ.get("DEEPSEEK_API_URL")
-    model = os.environ.get("DEEPSEEK_MODEL")
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.7
-    }
-    response = requests.post(url, json=payload)
-    return response.json()["choices"][0]["message"]["content"]
-
-def analyze_feedback_with_deepseek(prompt):
-    return ask_deepseek(prompt)
