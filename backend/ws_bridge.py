@@ -179,9 +179,10 @@ async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
 
 
 # --- Handler ---
-async def handler(ws: WebSocketServerProtocol, path: str) -> None:
+async def handler(ws: WebSocketServerProtocol, path: Optional[str] = None) -> None:
     client_addr = f"{ws.remote_address[0]}:{ws.remote_address[1]}"
-    logger.info(f"Client connected: {client_addr}")
+    ws_path = path if path is not None else getattr(ws, "path", "/")
+    logger.info(f"Client connected: {client_addr} path={ws_path}")
     try:
         async for message in ws:
             try:
