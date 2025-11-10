@@ -806,14 +806,145 @@ async def _extract_element_text(node: Any, selector: str, timeout: int = 5000, a
 # Scrapers
 # --------------------------------------------------------------------------------------
 
-async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
-    """Outlook scraper with deep read and month filtering."""
+async def _scroll_element(element: Any, *, step: int = 600, max_attempts: int = 8) -> None:
+    """Attempt to scroll a Playwright element node from top to bottom."""
+
+    if not element:
+        return
+
+    try:
+        await element.evaluate(
+            "(node) => { node.scrollTop = 0; node.dataset.__vampScrollHeight = node.scrollHeight; }"
+        )
+    except Exception:
+        return
+
+    for _ in range(max_attempts):
+        try:
+            await element.evaluate(
+                "(node, delta) => { node.scrollBy({ top: delta, behavior: 'smooth' }); }",
+                step,
+            )
+            await asyncio.sleep(0.3)
+        except Exception:
+            break
+
+
+async def _gather_outlook_attachments(page: Any) -> List[Dict[str, Any]]:
+    """Collect metadata for attachments currently visible in the Outlook preview pane."""
+
+    attachment_selectors = [
+        '[data-test-id="attachment-card"]',
+        '[data-test-id="attachment-preview"]',
+        '[data-log-name="Attachment"]',
+        'div[role="group"][aria-label*="Attachments"] [role="button"]',
+    ]
+
+    attachments: List[Dict[str, Any]] = []
+    seen_nodes: set[str] = set()
+
+    for selector in attachment_selectors:
+        try:
+            nodes = await page.query_selector_all(selector)
+        except Exception:
+            nodes = []
+
+        for node in nodes:
+            try:
+                handle_id = await node.get_attribute("data-attachment-id")
+            except Exception:
+                handle_id = None
+
+            if handle_id and handle_id in seen_nodes:
+                continue
+            if handle_id:
+                seen_nodes.add(handle_id)
+
+            try:
+                name = await _extract_element_text(
+                    node,
+                    '[data-test-id="attachment-name"], span, div[role="text"], [title]'
+                )
+            except Exception:
+                name = ""
+
+            try:
+                href = await node.get_attribute("href")
+            except Exception:
+                href = None
+
+            if not name:
+                try:
+                    aria = await node.get_attribute("aria-label")
+                except Exception:
+                    aria = ""
+                name = _clean_text(aria)
+
+            if not name:
+                continue
+
+            attachment_info: Dict[str, Any] = {
+                "name": name,
+                "href": href or "",
+                "opened": False,
+                "downloaded": False,
+            }
+
+            try:
+                async with page.expect_download(timeout=1500) as download_info:
+                    await node.click(timeout=1000)
+                download = await download_info.value
+                try:
+                    attachment_info["downloaded"] = True
+                    attachment_info["suggested_name"] = download.suggested_filename
+                finally:
+                    try:
+                        await download.cancel()
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    async with page.expect_popup(timeout=1500) as popup_info:
+                        await node.click(timeout=1000)
+                    popup = await popup_info.value
+                    try:
+                        await popup.wait_for_load_state("domcontentloaded")
+                        attachment_info["opened"] = True
+                    finally:
+                        await popup.close()
+                except Exception:
+                    try:
+                        await node.click(timeout=1000)
+                        attachment_info["opened"] = True
+                    except Exception:
+                        logger.debug("Unable to activate Outlook attachment %s", name)
+
+            attachments.append(attachment_info)
+
+    return attachments
+
+
+async def scrape_outlook(
+    page: Any,
+    month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
+    *,
+    deep_read: bool = False,
+    on_progress: Optional[Callable[[int, str], Any]] = None,
+) -> List[Dict[str, Any]]:
+    """Outlook scraper with optional deep read and month filtering."""
     items: List[Dict[str, Any]] = []
 
     try:
         await page.wait_for_selector('[role="listitem"], div[role="option"]', timeout=20000)
     except Exception:
-        logger.warning("Outlook message list not detected in expected time; continuing with best-effort scrape")
+        logger.warning(
+            "Outlook message list not detected in expected time; continuing with best-effort scrape"
+        )
+        if on_progress:
+            try:
+                await on_progress(25, "Outlook layout changed, attempting adaptive scrape...")
+            except Exception:
+                pass
 
     await _soft_scroll(page, times=25, delay=350)
 
@@ -832,7 +963,16 @@ async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.dat
             break
 
     if not rows:
-        rows = await page.query_selector_all('[role="listitem"]')
+        try:
+            rows = await page.query_selector_all('[role="listitem"]')
+        except Exception:
+            rows = []
+
+    if not rows:
+        try:
+            rows = await page.query_selector_all('[role="row"] [role="gridcell"]')
+        except Exception:
+            rows = []
 
     if not rows:
         logger.warning("No Outlook rows located; returning empty result set")
@@ -978,6 +1118,14 @@ async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.dat
             handle = await page.query_selector('[aria-label*="Message body"]')
             if handle:
                 body_text = await _ocr_element_text(handle)
+
+        if deep_read:
+            try:
+                container = await page.query_selector('div[role="document"], [aria-label*="Message body"]')
+            except Exception:
+                container = None
+            await _scroll_element(container)
+
         body_text = _clean_text(body_text)
 
         timestamp_value = ts.isoformat() if ts else _now_iso()
@@ -1000,6 +1148,22 @@ async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.dat
             item["preview"] = preview
         if body_text:
             item["body"] = body_text
+
+        if deep_read:
+            try:
+                attachments = await _gather_outlook_attachments(page)
+            except Exception as exc:
+                logger.debug("Attachment collection failed for %s: %s", subject, exc)
+                attachments = []
+
+            if attachments:
+                item["attachments"] = attachments
+
+            if on_progress:
+                try:
+                    await on_progress(35, f"Captured deep content for {subject[:64]}")
+                except Exception:
+                    pass
 
         item["hash"] = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
 
@@ -1114,7 +1278,14 @@ async def scrape_efundi(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date
 # Router and Main Scan Function
 # --------------------------------------------------------------------------------------
 
-async def run_scan_active(url: str, on_progress: Optional[Callable] = None, month_bounds: Optional[Tuple[dt.date, dt.date]] = None, identity: Optional[str] = None) -> List[Dict[str, Any]]:
+async def run_scan_active(
+    url: str,
+    on_progress: Optional[Callable] = None,
+    month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
+    identity: Optional[str] = None,
+    *,
+    deep_read: bool = False,
+) -> List[Dict[str, Any]]:
     await ensure_browser()
     
     parsed_url = urlparse(url)
@@ -1164,7 +1335,7 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
     
     items = []
     if service == "outlook":
-        items = await scrape_outlook(page, month_bounds)
+        items = await scrape_outlook(page, month_bounds, deep_read=deep_read, on_progress=on_progress)
     elif service == "onedrive":
         items = await scrape_onedrive(page, month_bounds)
     elif service == "drive":
@@ -1236,4 +1407,15 @@ async def run_scan_active_ws(email=None, year=None, month=None, url=None, deep_r
     except:
         month_bounds = None
 
-    return await run_scan_active(url=url, month_bounds=month_bounds, on_progress=progress_callback, identity=email)
+    if isinstance(deep_read, str):
+        deep_read_flag = deep_read.strip().lower() in {"1", "true", "yes", "on"}
+    else:
+        deep_read_flag = bool(deep_read)
+
+    return await run_scan_active(
+        url=url,
+        month_bounds=month_bounds,
+        on_progress=progress_callback,
+        identity=email,
+        deep_read=deep_read_flag,
+    )
