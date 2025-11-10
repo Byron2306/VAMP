@@ -654,11 +654,48 @@ async def _score_and_batch(
     if on_progress:
         await on_progress(90, "Scoring complete")
 
+def _clean_text(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
 async def _soft_scroll(page: Any, times: int = 5, delay: int = 500) -> None:
-    """Smooth scroll to trigger lazy loading."""
+    """Smooth scroll to trigger lazy loading using multiple strategies."""
     for _ in range(times):
-        await page.evaluate("window.scrollBy(0, window.innerHeight / 2)")
+        try:
+            await page.mouse.wheel(0, 600)
+        except Exception:
+            try:
+                await page.evaluate("window.scrollBy(0, window.innerHeight / 2)")
+            except Exception:
+                pass
+        try:
+            await page.keyboard.press("PageDown")
+        except Exception:
+            pass
         await page.wait_for_timeout(delay)
+
+
+async def _query_with_fallbacks(node: Any, selectors: List[str], attribute: Optional[str] = None) -> str:
+    for sel in selectors:
+        try:
+            handle = await node.query_selector(sel)
+        except Exception:
+            handle = None
+        if not handle:
+            continue
+        try:
+            if attribute:
+                value = await handle.get_attribute(attribute)
+            else:
+                value = await handle.inner_text()
+        except Exception:
+            value = ""
+        text = _clean_text(value)
+        if text:
+            return text
+    return ""
 
 def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
@@ -713,31 +750,187 @@ async def _extract_element_text(page: Any, selector: str, timeout: int = 5000) -
 
 async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
     """Outlook scraper with deep read and month filtering."""
-    items = []
-    await _soft_scroll(page, times=20)
+    items: List[Dict[str, Any]] = []
 
-    # Selectors for email rows
-    rows = await page.query_selector_all('[role="listitem"]')
-    for row in rows:
+    try:
+        await page.wait_for_selector('[role="listitem"], div[role="option"]', timeout=20000)
+    except Exception:
+        logger.warning("Outlook message list not detected in expected time; continuing with best-effort scrape")
+
+    await _soft_scroll(page, times=25, delay=350)
+
+    row_selectors = [
+        '[role="listitem"][data-convid]',
+        '[role="listitem"][data-conversation-id]',
+        '[aria-label*="Message list"] [role="listitem"]',
+        'div[role="option"]',
+    ]
+
+    rows: List[Any] = []
+    for sel in row_selectors:
+        nodes = await page.query_selector_all(sel)
+        if nodes:
+            rows = nodes
+            break
+
+    if not rows:
+        rows = await page.query_selector_all('[role="listitem"]')
+
+    if not rows:
+        logger.warning("No Outlook rows located; returning empty result set")
+        return items
+
+    for idx, row in enumerate(rows):
+        if len(items) >= 300:
+            break
+
         try:
-            subject = await _extract_element_text(row, '[aria-label*="Subject"]')
-            sender = await _extract_element_text(row, '[aria-label*="From"]')
-            ts_text = await _extract_element_text(row, '[aria-label*="Date"]')
-            ts = _parse_ts(ts_text)
-            if not _in_month(ts, month_bounds):
-                continue
-            item = {
-                "source": "outlook",
-                "path": f"{sender} - {subject}",
-                "size": 0,  # Placeholder
-                "timestamp": ts.isoformat() if ts else _now_iso()
-            }
-            item["hash"] = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
-            items.append(item)
-            if len(items) >= 300:
-                break
+            await row.scroll_into_view_if_needed()
         except Exception:
+            try:
+                await row.evaluate("node => node.scrollIntoView({block: 'center', inline: 'nearest'})")
+            except Exception:
+                pass
+
+        meta: Dict[str, Any] = {}
+        try:
+            meta = await row.evaluate(
+                """
+                (node) => {
+                    const getText = (selectors) => {
+                        for (const sel of selectors) {
+                            const target = node.querySelector(sel);
+                            if (target && target.textContent) {
+                                return target.textContent.trim();
+                            }
+                        }
+                        return "";
+                    };
+
+                    const attr = (name) => node.getAttribute(name) || "";
+
+                    return {
+                        subject: getText([
+                            '[data-test-id="message-subject"]',
+                            '[role="heading"]',
+                            'span[title]',
+                            '.ms-ListItem-primaryText',
+                            '.KxTitle'
+                        ]),
+                        sender: getText([
+                            '[data-test-id="sender"]',
+                            'span[title][id*="sender"]',
+                            '.ms-Persona-primaryText',
+                            'span[aria-label*="From"]',
+                            '.KxFrom'
+                        ]),
+                        preview: getText([
+                            '[data-test-id="message-preview"]',
+                            '.messagePreview',
+                            '.ms-ListItem-tertiaryText',
+                            '.KxPreview'
+                        ]),
+                        when: getText([
+                            '[data-test-id="message-received"]',
+                            'time',
+                            'span[aria-label*="AM"]',
+                            'span[aria-label*="PM"]',
+                            'span[title*="202"]',
+                            'span[title*="20"]'
+                        ]) || attr('data-converteddatetime') || attr('data-timestamp'),
+                        aria: attr('aria-label'),
+                        convoId: attr('data-convid') || attr('data-conversation-id') || attr('data-conversationid') || attr('data-unique-id'),
+                        nodeText: node.innerText || ""
+                    };
+                }
+                """
+            )
+        except Exception as exc:
+            logger.debug("Outlook row metadata evaluation failed: %s", exc)
+
+        subject = _clean_text(meta.get("subject")) if meta else ""
+        sender = _clean_text(meta.get("sender")) if meta else ""
+        preview = _clean_text(meta.get("preview")) if meta else ""
+        ts_text = _clean_text(meta.get("when")) if meta else ""
+        aria_label = _clean_text(meta.get("aria")) if meta else ""
+        convo_id = _clean_text(meta.get("convoId")) if meta else ""
+        node_text = _clean_text(meta.get("nodeText")) if meta else ""
+
+        if node_text:
+            parts = [p.strip() for p in node_text.split("\n") if p.strip()]
+        else:
+            parts = []
+
+        if not sender and parts:
+            sender = parts[0]
+        if not subject and len(parts) > 1:
+            subject = parts[1]
+        if not ts_text and parts:
+            for candidate in reversed(parts):
+                if any(char.isdigit() for char in candidate):
+                    ts_text = candidate
+                    break
+
+        if not subject:
+            subject = "(no subject)"
+        if not sender:
+            sender = "(unknown sender)"
+
+        ts = _parse_ts(ts_text) if ts_text else None
+
+        if ts and not _in_month(ts, month_bounds):
             continue
+
+        try:
+            await row.hover()
+        except Exception:
+            pass
+
+        opened = False
+        try:
+            await row.click(timeout=3000)
+            opened = True
+        except Exception:
+            try:
+                await row.focus()
+                await page.keyboard.press("Enter")
+                opened = True
+            except Exception:
+                logger.debug("Unable to activate Outlook row for %s", subject)
+
+        if opened:
+            await page.wait_for_timeout(600)
+
+        body_text = await _extract_element_text(page, 'div[role="document"]', timeout=4000)
+        if not body_text:
+            body_text = await _extract_element_text(page, '[aria-label*="Message body"]', timeout=3000)
+        body_text = _clean_text(body_text)
+
+        timestamp_value = ts.isoformat() if ts else _now_iso()
+
+        path_id = convo_id or f"{sender} - {subject}"
+        item = {
+            "source": "outlook",
+            "path": path_id,
+            "title": subject,
+            "sender": sender,
+            "size": 0,
+            "timestamp": timestamp_value,
+        }
+
+        if ts_text:
+            item["raw_timestamp"] = ts_text
+        if aria_label:
+            item["aria_label"] = aria_label
+        if preview:
+            item["preview"] = preview
+        if body_text:
+            item["body"] = body_text
+
+        item["hash"] = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
+
+        items.append(item)
+
     return items
 
 async def scrape_onedrive(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
