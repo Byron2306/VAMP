@@ -1,7 +1,11 @@
 
 from playwright.async_api import async_playwright
-from typing import List, Dict
+from typing import List, Dict, Any
 import re
+
+
+def _squash(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip() if text else ""
 
 def clean_text(html: str) -> str:
     # Simple normalization: remove excessive whitespace and strip tags
@@ -21,18 +25,143 @@ async def try_click_and_extract(page, selector, extract_func, retries=3):
             await page.wait_for_timeout(1000)
     return "(Retry exhausted)"
 
+async def _soft_scroll(page, times: int = 20, delay: int = 250) -> None:
+    for _ in range(times):
+        try:
+            await page.mouse.wheel(0, 600)
+        except Exception:
+            try:
+                await page.evaluate("window.scrollBy(0, window.innerHeight / 2)")
+            except Exception:
+                pass
+        await page.wait_for_timeout(delay)
+
+
+async def _extract_row_meta(row: Any) -> Dict[str, str]:
+    try:
+        return await row.evaluate(
+            """
+            (node) => {
+                const getText = (selectors) => {
+                    for (const sel of selectors) {
+                        const target = node.querySelector(sel);
+                        if (target && target.textContent) {
+                            return target.textContent.trim();
+                        }
+                    }
+                    return "";
+                };
+
+                const attr = (name) => node.getAttribute(name) || "";
+
+                return {
+                    subject: getText([
+                        '[data-test-id="message-subject"]',
+                        '[role="heading"]',
+                        'span[title]',
+                        '.ms-ListItem-primaryText',
+                        '.KxTitle'
+                    ]),
+                    sender: getText([
+                        '[data-test-id="sender"]',
+                        'span[title][id*="sender"]',
+                        '.ms-Persona-primaryText',
+                        'span[aria-label*="From"]',
+                        '.KxFrom'
+                    ]),
+                    preview: getText([
+                        '[data-test-id="message-preview"]',
+                        '.messagePreview',
+                        '.ms-ListItem-tertiaryText',
+                        '.KxPreview'
+                    ]),
+                    when: getText([
+                        '[data-test-id="message-received"]',
+                        'time',
+                        'span[aria-label*="AM"]',
+                        'span[aria-label*="PM"]',
+                        'span[title*="202"]',
+                        'span[title*="20"]'
+                    ]) || attr('data-converteddatetime') || attr('data-timestamp'),
+                    aria: attr('aria-label'),
+                    convoId: attr('data-convid') || attr('data-conversation-id') || attr('data-conversationid') || attr('data-unique-id'),
+                    text: node.innerText || ""
+                };
+            }
+            """
+        )
+    except Exception:
+        return {}
+
+
 async def scrape_outlook(page) -> List[Dict]:
     await page.wait_for_load_state("networkidle")
-    results = []
-    email_items = await page.query_selector_all("div[role='listitem']")
-    for idx, item in enumerate(email_items[:3]):
+    await _soft_scroll(page)
+    results: List[Dict] = []
+
+    selectors = [
+        "div[role='listitem'][data-convid]",
+        "div[role='listitem'][data-conversation-id]",
+        "[aria-label*='Message list'] div[role='listitem']",
+        "div[role='option']",
+    ]
+
+    rows: List[Any] = []
+    for sel in selectors:
+        rows = await page.query_selector_all(sel)
+        if rows:
+            break
+
+    if not rows:
+        rows = await page.query_selector_all("div[role='listitem']")
+
+    for idx, item in enumerate(rows[:25]):
+        meta = await _extract_row_meta(item)
+        subject = _squash(meta.get("subject", "")) or "(no subject)"
+        sender = _squash(meta.get("sender", "")) or "(unknown sender)"
+        preview = _squash(meta.get("preview", ""))
+        when = _squash(meta.get("when", ""))
+        aria = _squash(meta.get("aria", ""))
+        convo_id = _squash(meta.get("convoId", "")) or f"outlook_{idx}"
+
+        text_blob = _squash(meta.get("text", ""))
+        if not preview and text_blob:
+            preview = text_blob
+
         try:
-            await item.click()
-            await page.wait_for_timeout(2000)
+            await item.scroll_into_view_if_needed()
+        except Exception:
+            try:
+                await item.evaluate("node => node.scrollIntoView({block: 'center', inline: 'nearest'})")
+            except Exception:
+                pass
+
+        body = ""
+        try:
+            await item.click(timeout=3000)
+            await page.wait_for_timeout(800)
             html = await try_click_and_extract(page, "div[role='document']", lambda el: el.inner_html())
-            results.append({"id": f"outlook_{idx}", "type": "email", "content": clean_text(html)})
+            body = clean_text(html)
         except Exception as e:
-            results.append({"id": f"outlook_error_{idx}", "type": "error", "content": str(e)})
+            results.append({
+                "id": f"outlook_error_{idx}",
+                "type": "error",
+                "content": str(e)
+            })
+            continue
+
+        payload: Dict[str, Any] = {
+            "id": convo_id,
+            "type": "email",
+            "subject": subject,
+            "sender": sender,
+            "raw_timestamp": when,
+            "aria_label": aria,
+            "preview": preview,
+            "content": body or preview,
+        }
+        results.append(payload)
+
     return results
 
 async def scrape_generic_iframe(page, label) -> List[Dict]:
