@@ -10,6 +10,7 @@ import asyncio
 import datetime as dt
 import hashlib
 import inspect
+import io
 import json
 import logging
 import os
@@ -21,6 +22,25 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
+
+OCR_AVAILABLE = False
+_OCR_ERROR: Optional[str] = None
+
+try:
+    from PIL import Image  # type: ignore
+    import pytesseract  # type: ignore
+
+    try:
+        pytesseract.get_tesseract_version()
+        OCR_AVAILABLE = True
+    except Exception as exc:  # pragma: no cover - environment dependent
+        OCR_AVAILABLE = False
+        _OCR_ERROR = str(exc)
+except Exception as exc:  # pragma: no cover - optional dependency
+    Image = None  # type: ignore
+    pytesseract = None  # type: ignore
+    OCR_AVAILABLE = False
+    _OCR_ERROR = str(exc)
 
 from . import BRAIN_DATA_DIR, STATE_DIR
 from .vamp_store import _uid
@@ -735,14 +755,52 @@ def _hash_from(source: str, path: str, timestamp: str = "") -> str:
     h.update(timestamp.encode("utf-8"))
     return h.hexdigest()
 
-async def _extract_element_text(page: Any, selector: str, timeout: int = 5000) -> str:
-    """Extract text from first matching element."""
-    try:
-        await page.wait_for_selector(selector, timeout=timeout)
-        el = await page.query_selector(selector)
-        return await el.inner_text() or ""
-    except Exception:
+async def _ocr_element_text(element: Any) -> str:
+    """Attempt OCR-based text extraction from an element screenshot."""
+    if not OCR_AVAILABLE or element is None:
         return ""
+
+    try:
+        data = await element.screenshot(type="png")
+    except Exception as exc:
+        logger.debug("Element screenshot failed for OCR: %s", exc)
+        return ""
+
+    try:
+        with Image.open(io.BytesIO(data)) as img:  # type: ignore[arg-type]
+            text = pytesseract.image_to_string(img, config="--psm 6")  # type: ignore[union-attr]
+    except Exception as exc:
+        logger.debug("OCR text extraction failed: %s", exc)
+        return ""
+
+    return _clean_text(text)
+
+
+async def _extract_element_text(node: Any, selector: str, timeout: int = 5000, allow_ocr: bool = True) -> str:
+    """Extract text from first matching element with optional OCR fallback."""
+    element = None
+    try:
+        await node.wait_for_selector(selector, timeout=timeout)
+        element = await node.query_selector(selector)
+    except Exception:
+        element = None
+
+    if not element:
+        return ""
+
+    try:
+        text = await element.inner_text()
+    except Exception:
+        text = ""
+
+    cleaned = _clean_text(text)
+    if cleaned:
+        return cleaned
+
+    if allow_ocr:
+        return await _ocr_element_text(element)
+
+    return ""
 
 # --------------------------------------------------------------------------------------
 # Scrapers
@@ -855,6 +913,14 @@ async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.dat
         aria_label = _clean_text(meta.get("aria")) if meta else ""
         convo_id = _clean_text(meta.get("convoId")) if meta else ""
         node_text = _clean_text(meta.get("nodeText")) if meta else ""
+        if not node_text:
+            try:
+                direct_text = await row.inner_text()
+            except Exception:
+                direct_text = ""
+            node_text = _clean_text(direct_text)
+        if not node_text:
+            node_text = await _ocr_element_text(row)
 
         if node_text:
             parts = [p.strip() for p in node_text.split("\n") if p.strip()]
@@ -904,6 +970,14 @@ async def scrape_outlook(page: Any, month_bounds: Optional[Tuple[dt.date, dt.dat
         body_text = await _extract_element_text(page, 'div[role="document"]', timeout=4000)
         if not body_text:
             body_text = await _extract_element_text(page, '[aria-label*="Message body"]', timeout=3000)
+        if not body_text:
+            handle = await page.query_selector('div[role="document"]')
+            if handle:
+                body_text = await _ocr_element_text(handle)
+        if not body_text:
+            handle = await page.query_selector('[aria-label*="Message body"]')
+            if handle:
+                body_text = await _ocr_element_text(handle)
         body_text = _clean_text(body_text)
 
         timestamp_value = ts.isoformat() if ts else _now_iso()
@@ -1004,13 +1078,21 @@ async def scrape_efundi(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date
     for sel in sels:
         nodes = await page.query_selector_all(sel)
         for el in nodes:
-            txt = await el.inner_text() or ""
+            try:
+                raw_text = await el.inner_text()
+            except Exception:
+                raw_text = ""
+            txt = _clean_text(raw_text)
+            if (not txt or len(txt) < 5) and OCR_AVAILABLE:
+                txt = await _ocr_element_text(el)
             if not txt or len(txt) < 5:
                 continue
             first = (txt.split("\n")[0] or "")[0:160].strip()
             if not first:
                 continue
-            ts_text = await _extract_element_text(page, 'time, .date', timeout=3000)
+            ts_text = await _extract_element_text(el, 'time, .date', timeout=2000)
+            if not ts_text:
+                ts_text = await _extract_element_text(page, 'time, .date', timeout=3000, allow_ocr=False)
             ts = _parse_ts(ts_text)
             if not _in_month(ts, month_bounds):
                 continue
@@ -1117,6 +1199,14 @@ async def run_scan_active(url: str, on_progress: Optional[Callable] = None, mont
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("vamp_agent")
+
+if OCR_AVAILABLE:
+    logger.info("OCR fallback enabled for scraper text extraction")
+else:
+    if _OCR_ERROR:
+        logger.info("OCR fallback disabled: %s", _OCR_ERROR)
+    else:
+        logger.info("OCR fallback disabled: dependencies not installed")
 
 # --------------------------------------------------------------------------------------
 # SCAN_ACTIVE Wrapper for WebSocket integration
