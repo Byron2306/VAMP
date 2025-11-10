@@ -61,6 +61,7 @@ VAMP/
 - 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every DeepSeek/Ollama prompt
 - 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular design: easy to extend per platform
+- 🤖 Ollama-driven orchestration can trigger live VAMP scans directly from chat questions
 
 ---
 
