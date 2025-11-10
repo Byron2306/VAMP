@@ -8,12 +8,14 @@ Includes: SCAN_ACTIVE + ASK + ENROL + GET_STATE + FINALISE + EXPORT
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import json
 import logging
 import os
+import re
 import traceback
 from functools import partial
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
 try:  # websockets >= 10
@@ -60,6 +62,245 @@ def _supports_structured_feedback(func: Optional[Any]) -> bool:
 
 
 HAS_STRUCTURED_FEEDBACK = _supports_structured_feedback(analyze_feedback_with_deepseek)
+
+# --- LLM Orchestration helpers ---
+_ACTION_BLOCK = re.compile(r"```(?:tool|action)\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
+
+_CONNECTOR_SPEC = {
+    "scan_active": {
+        "description": "Scrape live evidence using the Playwright VAMP agent and add results to the evidence store.",
+        "arguments": {
+            "url": "Required. Full URL for the platform to scrape (Outlook, OneDrive, Google Drive, eFundi).",
+            "email": "Optional. Defaults to the enrolment e-mail.",
+            "year": "Optional. Defaults to the provided payload year or current year.",
+            "month": "Optional. Defaults to the provided payload month or current month.",
+            "deep_read": "Optional boolean. When false, skips deep content extraction (defaults to true)."
+        }
+    }
+}
+
+
+def _strip_action_blocks(text: str) -> str:
+    """Remove any ```tool``` blocks before returning a final answer."""
+
+    if not text:
+        return ""
+    return _ACTION_BLOCK.sub("", text).strip()
+
+
+def _extract_action(text: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Return (action_dict, error) parsed from a ```tool``` block, if present."""
+
+    if not text:
+        return None, None
+
+    match = _ACTION_BLOCK.search(text)
+    if not match:
+        return None, None
+
+    raw_block = match.group(1).strip()
+    try:
+        payload = json.loads(raw_block)
+        if not isinstance(payload, dict):
+            return None, "Tool payload must be a JSON object"
+        return payload, None
+    except json.JSONDecodeError as exc:
+        return None, f"Invalid tool JSON: {exc}"
+
+
+async def _execute_action(
+    action: Dict[str, Any],
+    base_msg: Dict[str, Any],
+    uid: str,
+) -> Dict[str, Any]:
+    """Execute an orchestrator action and return an observation dict."""
+
+    name = str(action.get("tool") or action.get("action") or action.get("name") or "").strip()
+    args = action.get("arguments") or action.get("args") or action.get("parameters") or {}
+    if not isinstance(args, dict):
+        args = {}
+
+    observation: Dict[str, Any] = {
+        "tool": name or "",
+        "status": "error",
+        "arguments": args,
+    }
+
+    if not name:
+        observation["error"] = "Tool name missing"
+        return observation
+
+    if name != "scan_active":
+        observation["error"] = f"Unknown tool: {name}"
+        return observation
+
+    if run_scan_active_ws is None:
+        observation["error"] = "VAMP agent not available"
+        return observation
+
+    # Defaults derived from payload or system state
+    email = (args.get("email") or base_msg.get("email") or uid or "").strip()
+    year = int(args.get("year") or base_msg.get("year") or _dt.datetime.utcnow().year)
+    month = int(args.get("month") or base_msg.get("month") or _dt.datetime.utcnow().month)
+    url = (args.get("url") or base_msg.get("url") or "").strip()
+    deep_read = args.get("deep_read")
+    if isinstance(deep_read, str):
+        deep_read = deep_read.lower() not in {"0", "false", "no"}
+    elif deep_read is None:
+        deep_read = bool(base_msg.get("deep_read", True))
+    else:
+        deep_read = bool(deep_read)
+
+    if not url:
+        observation["error"] = "URL is required for scan_active"
+        return observation
+
+    progress_log: List[Dict[str, Any]] = []
+
+    async def capture_progress(progress: float, status: str) -> None:
+        progress_log.append({"progress": progress, "status": status})
+
+    try:
+        results = await run_scan_active_ws(
+            email=email,
+            year=year,
+            month=month,
+            url=url,
+            deep_read=bool(deep_read),
+            progress_callback=capture_progress,
+        )
+    except Exception as exc:  # pragma: no cover - Playwright errors
+        observation["error"] = f"Scan failed: {exc}"
+        observation["progress"] = progress_log
+        return observation
+
+    results = results or []
+
+    try:
+        month_doc = store.add_items(email or uid, year, month, results)
+    except Exception as exc:
+        observation["error"] = f"Store update failed: {exc}"
+        observation["progress"] = progress_log
+        observation["items_found"] = len(results)
+        return observation
+
+    sample: List[Dict[str, Any]] = []
+    for item in results[: min(5, len(results))]:
+        sample.append(
+            {
+                "title": item.get("title") or item.get("subject") or item.get("name"),
+                "platform": item.get("platform") or item.get("source"),
+                "score": item.get("score"),
+                "band": item.get("band"),
+                "date": item.get("date") or item.get("modified"),
+            }
+        )
+
+    observation.update(
+        {
+            "status": "success",
+            "items_found": len(results),
+            "total_month_items": len(month_doc.get("items", [])),
+            "progress": progress_log[-5:],
+            "sample": sample,
+        }
+    )
+    logger.info(
+        "Autop connector scan_active completed for %s (items=%d, total=%d)",
+        email or uid,
+        len(results),
+        len(month_doc.get("items", [])),
+    )
+    return observation
+
+
+async def _orchestrate_answer(msg: Dict[str, Any], question: str) -> Dict[str, Any]:
+    """Drive an LLM loop that can invoke connectors before producing an answer."""
+
+    if not ask_deepseek:
+        return {"answer": f"[VAMP AI] Received: {question}", "tools": []}
+
+    uid = _uid_from(msg)
+    loop = asyncio.get_running_loop()
+    history: List[Tuple[str, str]] = []
+    tool_summaries: List[Dict[str, Any]] = []
+    max_steps = 3
+
+    connector_doc = json.dumps(_CONNECTOR_SPEC, ensure_ascii=False, indent=2)
+    context_line = (
+        f"User context → email: {msg.get('email') or uid}, "
+        f"year: {msg.get('year') or _dt.datetime.utcnow().year}, "
+        f"month: {msg.get('month') or _dt.datetime.utcnow().month}"
+    )
+
+    instructions = (
+        "You are the VAMP Autop orchestrator. Plan how to answer questions using live connectors when necessary. "
+        "If you need fresh evidence, call a connector by responding with ONLY a JSON object inside a ```tool``` block. "
+        "Example: ```tool\\n{\"tool\":\"scan_active\",\"arguments\":{\"url\":\"https://outlook.office.com/mail/\",\"email\":\"user@nwu.ac.za\"}}\\n```. "
+        "After a connector runs, review the tool result from the history and continue reasoning. "
+        "When you are ready to respond, provide a concise written answer with citations of the evidence summaries."
+    )
+
+    for step in range(max_steps):
+        history_lines = []
+        for role, content in history:
+            prefix = "TOOL" if role == "tool" else "ASSISTANT"
+            history_lines.append(f"{prefix}: {content}")
+
+        prompt_parts = [
+            instructions,
+            f"Available connectors: {connector_doc}",
+            context_line,
+            "History:" if history_lines else "History: (none)",
+            "\n".join(history_lines) if history_lines else "",
+            "Question:",
+            question,
+        ]
+
+        prompt = "\n\n".join(part for part in prompt_parts if part)
+
+        try:
+            response = await loop.run_in_executor(None, partial(ask_deepseek, prompt))
+        except Exception as exc:
+            return {
+                "answer": f"[VAMP AI] (error) {exc}",
+                "tools": tool_summaries,
+            }
+
+        response = response or ""
+        history.append(("assistant", _strip_action_blocks(response)))
+
+        action, error = _extract_action(response)
+        if error:
+            error_obs = {"tool": "", "status": "error", "error": error}
+            history.append(("tool", json.dumps(error_obs, ensure_ascii=False)))
+            tool_summaries.append(error_obs)
+            continue
+
+        if action:
+            observation = await _execute_action(action, msg, uid)
+            tool_summaries.append(observation)
+            history.append(("tool", json.dumps(observation, ensure_ascii=False)))
+            continue
+
+        final_answer = _strip_action_blocks(response)
+        if tool_summaries:
+            formatted = "\n".join(
+                f"- {obs.get('tool') or 'unknown'} → {obs.get('status')} (items={obs.get('items_found', 0)})"
+                for obs in tool_summaries
+            )
+            final_answer = f"{final_answer}\n\nTools used:\n{formatted}".strip()
+        return {"answer": final_answer or "(AI returned no answer)", "tools": tool_summaries}
+
+    # If loop exhausted without final answer, surface last assistant message
+    fallback = history[-1][1] if history else "(AI produced no answer)"
+    if tool_summaries:
+        formatted = "\n".join(
+            f"- {obs.get('tool') or 'unknown'} → {obs.get('status')} (items={obs.get('items_found', 0)})"
+            for obs in tool_summaries
+        )
+        fallback = f"{fallback}\n\nTools used:\n{formatted}".strip()
+    return {"answer": fallback, "tools": tool_summaries}
 
 # --- Helpers ---
 def ok(action: str, data: Any = None) -> str:
@@ -212,21 +453,19 @@ async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
     messages = msg.get("messages", [])
     question = "\n\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict)).strip()
 
-    answer = "[VAMP AI] No question received."
+    if not question:
+        await _safe_send(ws, ok("ASK", {"answer": "[VAMP AI] No question received."}), "ASK")
+        return
 
-    if question:
-        if ask_deepseek:
-            loop = asyncio.get_running_loop()
-            try:
-                response = await loop.run_in_executor(None, partial(ask_deepseek, question))
-                answer = response or "(AI returned an empty response)"
-            except Exception as e:
-                logger.warning(f"ask_deepseek failed: {e}")
-                answer = f"[VAMP AI] (fallback) {question}"
-        else:
-            answer = f"[VAMP AI] Received: {question}"
+    try:
+        orchestration = await _orchestrate_answer(msg, question)
+    except Exception as exc:
+        logger.warning(f"orchestration failed: {exc}")
+        fallback = f"[VAMP AI] (fallback) {question}"
+        await _safe_send(ws, ok("ASK", {"answer": fallback}), "ASK")
+        return
 
-    await _safe_send(ws, ok("ASK", {"answer": answer}), "ASK")
+    await _safe_send(ws, ok("ASK", orchestration), "ASK")
 
 
 async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
