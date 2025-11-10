@@ -4,3 +4,5 @@ requests
 pandas
 playwright
 websockets
+pillow
+pytesseract
