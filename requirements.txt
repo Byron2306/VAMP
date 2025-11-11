@@ -6,3 +6,4 @@ playwright
 websockets
 pillow
 pytesseract
+cryptography

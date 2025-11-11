@@ -1,0 +1,25 @@
+{
+  "connectors": [
+    {
+      "name": "outlook",
+      "module": "backend.platform_plugins.outlook",
+      "cls": "OutlookConnector",
+      "enabled": true,
+      "config": {}
+    },
+    {
+      "name": "onedrive",
+      "module": "backend.platform_plugins.onedrive",
+      "cls": "OneDriveConnector",
+      "enabled": false,
+      "config": {}
+    },
+    {
+      "name": "drive",
+      "module": "backend.platform_plugins.drive",
+      "cls": "GoogleDriveConnector",
+      "enabled": false,
+      "config": {}
+    }
+  ]
+}

@@ -71,6 +71,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 # -------------------------
 
 from . import BRAIN_DATA_DIR
+from .agent_app.app_state import agent_state
 from .nwu_brain.scoring import NWUScorer
 
 # -------------------------
@@ -378,6 +379,8 @@ def scan_and_score(evidence_root: Path,
 
     rows_csv: List[Dict[str, Any]] = []
 
+    state = agent_state()
+
     for i, art in enumerate(artefacts, 1):
         if i % 25 == 1 or i == len(artefacts):
             say(f"  · Reading/scoring {i}/{len(artefacts)} … {art.relpath}")
@@ -421,6 +424,26 @@ def scan_and_score(evidence_root: Path,
         ctx = to_common_context_row(artefact=art, item=item)
         out_row = {**ctx, **csv_row}
         rows_csv.append(out_row)
+
+        # Persist to the agent-managed evidence vault for audit & retention control
+        try:
+            state.record_evidence(
+                {
+                    "uid": out_row.get("hash") or art.sha1,
+                    "source": out_row.get("platform", "LocalFS"),
+                    "title": out_row.get("name", art.path.name),
+                    "kpas": out_row.get("kpa", []) or [],
+                    "score": float(out_row.get("score", 0.0) or 0.0),
+                    "rationale": out_row.get("rationale", ""),
+                    "metadata": {
+                        "relpath": out_row.get("relpath"),
+                        "policy_hits": out_row.get("policy_hits", []),
+                        "must_pass_risks": out_row.get("must_pass_risks", []),
+                    },
+                }
+            )
+        except Exception as exc:  # pragma: no cover - non-critical path
+            say(f"Warning: failed to persist evidence to vault: {exc}")
 
     out_dir = ensure_dir(evidence_root / out_dirname)
     audit_csv = out_dir / "audit.csv"
