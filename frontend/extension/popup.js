@@ -605,6 +605,10 @@
         const total = data.total_evidence || data.total || msg.total_evidence || 0;
         setScanNote(`Complete - ${added} new items, ${total} total`);
         logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
+        const brainSummary = data.brain_summary || msg.brain_summary || data.summary || msg.summary || '';
+        if (brainSummary) {
+          logAnswer(`🧠 ${brainSummary}`, 'info');
+        }
         enableControls(true);
         setStatus('Connected', 'connected');
         stopHeartbeat();
