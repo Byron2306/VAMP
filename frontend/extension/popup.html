@@ -6,6 +6,8 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <!-- Enhanced dark gothic theme -->
   <link rel="stylesheet" href="popup.css" />
+      <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+      <script src="socket-io-wrapper.js"></script>
 </head>
 <body class="vamp-popup">
 
@@ -21,7 +23,7 @@
     <div class="section-title">Connection</div>
     <div class="row">
       <label for="wsUrl">WebSocket URL</label>
-      <input id="wsUrl" type="text" value="ws://127.0.0.1:8765" />
+      <input id="wsUrl" type="text" value="ws://127.0.0.1:8080" />
     </div>
     <div class="row">
       <label for="scanUrl">Scan URL</label>
@@ -218,4 +220,5 @@
   <!-- Enhanced Logic -->
   <script src="popup.js" defer></script>
 </body>
+
 </html>
