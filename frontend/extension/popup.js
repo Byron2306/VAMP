@@ -50,7 +50,7 @@
 
   // ---------- State Management ----------
   let ws = null;
-  let wsUrlCurrent = 'ws://127.0.0.1:8765';
+  let wsUrlCurrent = 'ws://127.0.0.1:8080';
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let isBusy = false;
@@ -1300,3 +1300,4 @@
     }
   });
 })();
+
