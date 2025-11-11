@@ -17,7 +17,17 @@ def create_app() -> tuple:
     dashboard_dir = backend_dir.parent / 'frontend' / 'dashboard'
     
     app = Flask(__name__, static_folder=str(dashboard_dir), static_url_path='')
-    socketio = SocketIO(app, cors_allowed_origins="*")
+    
+    # Configure SocketIO with proper CORS and transport settings
+    socketio = SocketIO(
+        app,
+        cors_allowed_origins="*",
+        async_mode='threading',  # Use threading for compatibility
+        ping_timeout=60,  # Increase timeout to 60 seconds
+        ping_interval=25,  # Send ping every 25 seconds
+        logger=True,
+        engineio_logger=True
+    )
     
     # Register API blueprint
     app.register_blueprint(api)
@@ -51,10 +61,24 @@ def create_app() -> tuple:
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     app, socketio = create_app()
-    host = os.getenv("VAMP_AGENT_HOST", "0.0.0.0")
+    
+    # Get host configuration - default to localhost for extension compatibility
+    # For production, set VAMP_AGENT_HOST=0.0.0.0 to listen on all interfaces
+    host = os.getenv("VAMP_AGENT_HOST", "127.0.0.1")
     port = int(os.getenv("VAMP_AGENT_PORT", "8080"))
+    
     logger.info("Starting VAMP agent-as-app server on %s:%s", host, port)
-    socketio.run(app, host=host, port=port, debug=False, allow_unsafe_werkzeug=True)
+    logger.info("Extension should connect to: ws://%s:%s", host, port)
+    
+    # Run the server with proper configuration
+    socketio.run(
+        app,
+        host=host,
+        port=port,
+        debug=False,
+        allow_unsafe_werkzeug=True,
+        use_reloader=False  # Disable reloader in production
+    )
 
-if __name__ == "__main__": # pragma: no cover
+if __name__ == "__main__":  # pragma: no cover
     main()
