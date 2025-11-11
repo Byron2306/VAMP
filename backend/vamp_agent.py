@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
+from email.utils import parsedate_to_datetime
 
 OCR_AVAILABLE = False
 _OCR_ERROR: Optional[str] = None
@@ -43,6 +44,7 @@ except Exception as exc:  # pragma: no cover - optional dependency
     _OCR_ERROR = str(exc)
 
 from . import BRAIN_DATA_DIR, STATE_DIR
+from .outlook_selectors import OUTLOOK_ROW_SELECTORS
 from .vamp_store import _uid
 from .nwu_brain.scoring import NWUScorer
 
@@ -77,6 +79,9 @@ BROWSER_CONFIG = {
         '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
     ]
 }
+
+OUTLOOK_MAX_ROWS = int(os.getenv("VAMP_OUTLOOK_MAX_ROWS", "500"))
+OUTLOOK_RETRY_WAIT_MS = int(os.getenv("VAMP_OUTLOOK_RETRY_WAIT_MS", "1500"))
 
 # Optional credential-based automation (service -> env var names)
 SERVICE_CREDENTIAL_ENV = {
@@ -206,6 +211,20 @@ def _state_path_for(service: Optional[str], identity: Optional[str]) -> Optional
             logger.warning("Failed to migrate legacy %s storage state: %s", service, exc)
 
     return state_path
+
+
+async def _persist_context_state(service: Optional[str], identity: Optional[str], context: Any) -> None:
+    """Persist the latest browser storage state for a given service."""
+
+    state_path = _state_path_for(service, identity)
+    if not state_path:
+        return
+
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        await context.storage_state(path=str(state_path))
+    except Exception as exc:
+        logger.debug("Unable to persist %s storage state: %s", service or "generic", exc)
 
 
 async def get_authenticated_context(service: str, identity: Optional[str] = None) -> Any:
@@ -721,23 +740,75 @@ def _now_iso() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 def _parse_ts(ts_str: str) -> Optional[dt.datetime]:
+    value = (ts_str or "").strip()
+    if not value:
+        return None
+
+    for parser in (
+        lambda s: dt.datetime.fromisoformat(s),
+        lambda s: dt.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ"),
+        lambda s: dt.datetime.strptime(s, "%Y-%m-%d %H:%M:%S"),
+        lambda s: dt.datetime.strptime(s, "%m/%d/%Y %H:%M %p"),
+    ):
+        try:
+            return parser(value)
+        except Exception:
+            continue
+
     try:
-        return dt.datetime.fromisoformat(ts_str)
+        parsed = parsedate_to_datetime(value)
     except Exception:
-        pass
-    try:
-        return dt.datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%SZ")
-    except Exception:
-        pass
-    try:
-        return dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-    except Exception:
-        pass
-    try:
-        return dt.datetime.strptime(ts_str, "%m/%d/%Y %H:%M %p")
-    except Exception:
-        pass
-    return None
+        parsed = None
+    if parsed:
+        return parsed
+
+    lowered = value.lower()
+    now = dt.datetime.now(dt.timezone.utc)
+    base_date: Optional[dt.date] = None
+
+    if "yesterday" in lowered:
+        base_date = (now - dt.timedelta(days=1)).date()
+    elif "today" in lowered:
+        base_date = now.date()
+    elif lowered.startswith("last "):
+        weekdays = {
+            "monday": 0,
+            "tuesday": 1,
+            "wednesday": 2,
+            "thursday": 3,
+            "friday": 4,
+            "saturday": 5,
+            "sunday": 6,
+        }
+        parts = lowered.split()
+        if len(parts) >= 2:
+            token = parts[1]
+            target = weekdays.get(token)
+            if target is None:
+                for name, idx in weekdays.items():
+                    if name.startswith(token):
+                        target = idx
+                        break
+            if target is not None:
+                delta = (now.weekday() - target) % 7 or 7
+                base_date = (now - dt.timedelta(days=delta)).date()
+
+    if base_date is None:
+        return None
+
+    time_match = re.search(r"(\d{1,2}:\d{2}\s*(?:am|pm)?)", value, flags=re.IGNORECASE)
+    time_value = dt.time(hour=0, minute=0, tzinfo=now.tzinfo)
+    if time_match:
+        token = time_match.group(1).strip()
+        for fmt in ("%I:%M %p", "%H:%M"):
+            try:
+                parsed_time = dt.datetime.strptime(token.upper(), fmt).time()
+                time_value = parsed_time.replace(tzinfo=now.tzinfo)
+                break
+            except Exception:
+                continue
+
+    return dt.datetime.combine(base_date, time_value, tzinfo=now.tzinfo)
 
 def _in_month(ts: Optional[dt.datetime], month_bounds: Optional[Tuple[dt.date, dt.date]]) -> bool:
     if not ts or not month_bounds:
@@ -928,58 +999,73 @@ async def scrape_outlook(
     page: Any,
     month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
     *,
-    deep_read: bool = False,
+    deep_read: bool = True,
     on_progress: Optional[Callable[[int, str], Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Outlook scraper with optional deep read and month filtering."""
     items: List[Dict[str, Any]] = []
+    seen_hashes: set[str] = set()
 
     try:
-        await page.wait_for_selector('[role="listitem"], div[role="option"]', timeout=20000)
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_selector('[role="listitem"], [role="option"]', timeout=20000)
     except Exception:
         logger.warning(
-            "Outlook message list not detected in expected time; continuing with best-effort scrape"
+            "Outlook message list not detected in expected time; continuing with adaptive scrape"
         )
         if on_progress:
             try:
-                await on_progress(25, "Outlook layout changed, attempting adaptive scrape...")
+                await on_progress(25, "Waiting for Outlook mailbox to stabilize...")
             except Exception:
                 pass
 
-    await _soft_scroll(page, times=25, delay=350)
-
-    row_selectors = [
-        '[role="listitem"][data-convid]',
-        '[role="listitem"][data-conversation-id]',
-        '[aria-label*="Message list"] [role="listitem"]',
-        'div[role="option"]',
-    ]
+    await _soft_scroll(page, times=20, delay=300)
 
     rows: List[Any] = []
-    for sel in row_selectors:
-        nodes = await page.query_selector_all(sel)
-        if nodes:
-            rows = nodes
+    selector_hits: List[Tuple[str, int]] = []
+
+    for attempt in range(3):
+        rows.clear()
+        selector_hits.clear()
+        for sel in OUTLOOK_ROW_SELECTORS:
+            try:
+                nodes = await page.query_selector_all(sel)
+            except Exception:
+                nodes = []
+            if not nodes:
+                continue
+            selector_hits.append((sel, len(nodes)))
+            rows.extend(nodes)
+
+        if rows:
             break
 
+        if attempt < 2:
+            logger.debug(
+                "Outlook selectors matched zero rows (attempt %d); retrying after soft scroll",
+                attempt + 1,
+            )
+            await _soft_scroll(page, times=15 + (attempt * 5), delay=350)
+            await page.wait_for_timeout(OUTLOOK_RETRY_WAIT_MS)
+
     if not rows:
         try:
-            rows = await page.query_selector_all('[role="listitem"]')
+            rows = await page.query_selector_all('div[role="listitem"]')
         except Exception:
             rows = []
 
     if not rows:
-        try:
-            rows = await page.query_selector_all('[role="row"] [role="gridcell"]')
-        except Exception:
-            rows = []
-
-    if not rows:
-        logger.warning("No Outlook rows located; returning empty result set")
+        logger.warning("No Outlook rows located after selector retries; returning empty result set")
         return items
 
+    if selector_hits:
+        for sel, count in selector_hits:
+            logger.debug("Outlook selector %s matched %d nodes", sel, count)
+    else:
+        logger.debug("Outlook fallback selector matched %d nodes", len(rows))
+
     for idx, row in enumerate(rows):
-        if len(items) >= 300:
+        if len(items) >= OUTLOOK_MAX_ROWS:
             break
 
         try:
@@ -1083,9 +1169,10 @@ async def scrape_outlook(
             sender = "(unknown sender)"
 
         ts = _parse_ts(ts_text) if ts_text else None
-
         if ts and not _in_month(ts, month_bounds):
             continue
+        if ts is None and ts_text:
+            logger.debug("Unable to parse Outlook timestamp '%s'; including email", ts_text)
 
         try:
             await row.hover()
@@ -1094,7 +1181,7 @@ async def scrape_outlook(
 
         opened = False
         try:
-            await row.click(timeout=3000)
+            await row.click(timeout=4000)
             opened = True
         except Exception:
             try:
@@ -1104,20 +1191,34 @@ async def scrape_outlook(
             except Exception:
                 logger.debug("Unable to activate Outlook row for %s", subject)
 
+        body_text = ""
         if opened:
-            await page.wait_for_timeout(600)
+            try:
+                wait_for_body_script = (
+                    "() => {\n"
+                    "  const doc = document.querySelector('div[role=\\'document\\']') ||\n"
+                    "              document.querySelector('[aria-label*=\"Message body\"]');\n"
+                    "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
+                    "}\n"
+                )
+                await page.wait_for_function(
+                    wait_for_body_script,
+                    timeout=6000,
+                )
+            except Exception:
+                await page.wait_for_timeout(500)
 
-        body_text = await _extract_element_text(page, 'div[role="document"]', timeout=4000)
-        if not body_text:
-            body_text = await _extract_element_text(page, '[aria-label*="Message body"]', timeout=3000)
-        if not body_text:
-            handle = await page.query_selector('div[role="document"]')
-            if handle:
-                body_text = await _ocr_element_text(handle)
-        if not body_text:
-            handle = await page.query_selector('[aria-label*="Message body"]')
-            if handle:
-                body_text = await _ocr_element_text(handle)
+            body_text = await _extract_element_text(page, 'div[role="document"]', timeout=5000)
+            if not body_text:
+                body_text = await _extract_element_text(page, '[aria-label*="Message body"]', timeout=4000)
+            if not body_text:
+                handle = await page.query_selector('div[role="document"]')
+                if handle:
+                    body_text = await _ocr_element_text(handle)
+            if not body_text:
+                handle = await page.query_selector('[aria-label*="Message body"]')
+                if handle:
+                    body_text = await _ocr_element_text(handle)
 
         if deep_read:
             try:
@@ -1148,6 +1249,8 @@ async def scrape_outlook(
             item["preview"] = preview
         if body_text:
             item["body"] = body_text
+        if ts is None:
+            item["timestamp_estimated"] = True
 
         if deep_read:
             try:
@@ -1165,7 +1268,11 @@ async def scrape_outlook(
                 except Exception:
                     pass
 
-        item["hash"] = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
+        item_hash = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
+        if item_hash in seen_hashes:
+            continue
+        seen_hashes.add(item_hash)
+        item["hash"] = item_hash
 
         items.append(item)
 
@@ -1284,7 +1391,7 @@ async def run_scan_active(
     month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
     identity: Optional[str] = None,
     *,
-    deep_read: bool = False,
+    deep_read: bool = True,
 ) -> List[Dict[str, Any]]:
     await ensure_browser()
     
@@ -1344,6 +1451,11 @@ async def run_scan_active(
         items = await scrape_efundi(page, month_bounds)
 
     await page.close()
+
+    try:
+        await _persist_context_state(service, identity, context)
+    except Exception as exc:
+        logger.debug("Failed to persist browser state for %s: %s", service, exc)
 
     logger.info("Scraped %d %s items from %s", len(items), service or "unknown", url)
 
