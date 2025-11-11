@@ -11,8 +11,12 @@ from .agent_app.app_state import agent_state
 
 logger = logging.getLogger(__name__)
 
-def create_app() -> Flask:
-    app = Flask(__name__, static_folder='../../frontend/dashboard', static_url_path='')
+def create_app() -> tuple:
+    # Calculate path to dashboard folder
+    backend_dir = Path(__file__).parent
+    dashboard_dir = backend_dir.parent / 'frontend' / 'dashboard'
+    
+    app = Flask(__name__, static_folder=str(dashboard_dir), static_url_path='')
     socketio = SocketIO(app, cors_allowed_origins="*")
     
     # Register API blueprint
