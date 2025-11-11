@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+from textwrap import dedent
 from typing import Any, Dict, List
 
 from playwright.async_api import async_playwright
@@ -51,55 +52,57 @@ async def _soft_scroll(page, times: int = 20, delay: int = 250) -> None:
 async def _extract_row_meta(row: Any) -> Dict[str, str]:
     try:
         return await row.evaluate(
-            """
-            (node) => {
-                const getText = (selectors) => {
-                    for (const sel of selectors) {
-                        const target = node.querySelector(sel);
-                        if (target && target.textContent) {
-                            return target.textContent.trim();
+            dedent(
+                """
+                (node) => {
+                    const getText = (selectors) => {
+                        for (const sel of selectors) {
+                            const target = node.querySelector(sel);
+                            if (target && target.textContent) {
+                                return target.textContent.trim();
+                            }
                         }
-                    }
-                    return "";
-                };
+                        return "";
+                    };
 
-                const attr = (name) => node.getAttribute(name) || "";
+                    const attr = (name) => node.getAttribute(name) || "";
 
-                return {
-                    subject: getText([
-                        '[data-test-id="message-subject"]',
-                        '[role="heading"]',
-                        'span[title]',
-                        '.ms-ListItem-primaryText',
-                        '.KxTitle'
-                    ]),
-                    sender: getText([
-                        '[data-test-id="sender"]',
-                        'span[title][id*="sender"]',
-                        '.ms-Persona-primaryText',
-                        'span[aria-label*="From"]',
-                        '.KxFrom'
-                    ]),
-                    preview: getText([
-                        '[data-test-id="message-preview"]',
-                        '.messagePreview',
-                        '.ms-ListItem-tertiaryText',
-                        '.KxPreview'
-                    ]),
-                    when: getText([
-                        '[data-test-id="message-received"]',
-                        'time',
-                        'span[aria-label*="AM"]',
-                        'span[aria-label*="PM"]',
-                        'span[title*="202"]',
-                        'span[title*="20"]'
-                    ]) || attr('data-converteddatetime') || attr('data-timestamp'),
-                    aria: attr('aria-label'),
-                    convoId: attr('data-convid') || attr('data-conversation-id') || attr('data-conversationid') || attr('data-unique-id'),
-                    text: node.innerText || ""
-                };
-            }
-            """
+                    return {
+                        subject: getText([
+                            '[data-test-id="message-subject"]',
+                            '[role="heading"]',
+                            'span[title]',
+                            '.ms-ListItem-primaryText',
+                            '.KxTitle'
+                        ]),
+                        sender: getText([
+                            '[data-test-id="sender"]',
+                            'span[title][id*="sender"]',
+                            '.ms-Persona-primaryText',
+                            'span[aria-label*="From"]',
+                            '.KxFrom'
+                        ]),
+                        preview: getText([
+                            '[data-test-id="message-preview"]',
+                            '.messagePreview',
+                            '.ms-ListItem-tertiaryText',
+                            '.KxPreview'
+                        ]),
+                        when: getText([
+                            '[data-test-id="message-received"]',
+                            'time',
+                            'span[aria-label*="AM"]',
+                            'span[aria-label*="PM"]',
+                            'span[title*="202"]',
+                            'span[title*="20"]'
+                        ]) || attr('data-converteddatetime') || attr('data-timestamp'),
+                        aria: attr('aria-label'),
+                        convoId: attr('data-convid') || attr('data-conversation-id') || attr('data-conversationid') || attr('data-unique-id'),
+                        text: node.innerText || ""
+                    };
+                }
+                """
+            )
         )
     except Exception:
         return {}
@@ -108,11 +111,15 @@ async def _extract_row_meta(row: Any) -> Dict[str, str]:
 async def _wait_for_preview_content(page: Any, timeout: int = 6000) -> bool:
     try:
         await page.wait_for_function(
-            "() => {\n"
-            "  const doc = document.querySelector('div[role=\\'document\\']') ||"
-            "              document.querySelector('[aria-label*="Message body"]');\n"
-            "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
-            "}",
+            dedent(
+                """
+                () => {
+                    const doc = document.querySelector("div[role='document']")
+                        || document.querySelector("[aria-label*='Message body']");
+                    return doc && doc.innerText && doc.innerText.trim().length > 0;
+                }
+                """
+            ),
             timeout=timeout,
         )
         return True

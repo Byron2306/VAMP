@@ -67,6 +67,7 @@
       <button id="btnEnrol" class="btn">Enrol</button>
       <button id="btnState" class="btn">Get State</button>
       <button id="btnScan" class="btn primary">Scan Active</button>
+      <button id="btnScanBrain" class="btn accent">Scan via Brain</button>
       <button id="btnFinalise" class="btn">Finalise Month</button>
       <button id="btnExport" class="btn">Export Month CSV</button>
       <button id="btnCompile" class="btn">Compile Year CSV</button>
@@ -80,16 +81,17 @@
     <div class="row row-compact">
       <button id="btnAsk" class="btn primary">Ask</button>
       <button id="btnAskFeedback" class="btn">Ask (Assessor-strict)</button>
+      <button id="btnClearChat" class="btn subtle">Clear Chat</button>
     </div>
+    <div id="chatHistory" class="chat-history" aria-live="polite"></div>
   </section>
 
   <!-- Enhanced Evidence Display Section -->
   <section class="panel evidence-section">
     <div class="section-title">Office365 Evidence</div>
     <div class="evidence-controls">
-      <button id="btnRefreshEvidence" class="btn">🔄 Refresh</button>
-      <button id="btnViewDetails" class="btn">📊 View Details</button>
-      <button id="btnClearEvidence" class="btn">🗑️ Clear</button>
+      <span class="hint-inline">Click any row to open detailed evidence.</span>
+      <button id="btnClearEvidence" class="btn subtle">🗑️ Clear</button>
     </div>
     <div id="evidenceTableContainer" class="evidence-table-container">
       <table id="evidenceTable" class="evidence-table">
@@ -121,6 +123,11 @@
       <span id="evidenceScore">Ready to scan</span>
       <span id="evidenceLastScan">Last: Never</span>
     </div>
+    <div class="timestamp-legend">
+      <span class="legend-title">Timestamp confidence:</span>
+      <span class="legend-item exact">✔ exact</span>
+      <span class="legend-item estimated">≈ AI-estimated</span>
+    </div>
   </section>
 
   <!-- Enhanced Progress + notes -->
@@ -138,6 +145,18 @@
   <section class="panel output-section">
     <div class="section-title">Activity Log</div>
     <div id="answerBox" class="answer" aria-live="polite"></div>
+  </section>
+
+  <section class="panel ai-section">
+    <div class="section-title">AI Insights</div>
+    <div class="ai-summary-block">
+      <div class="summary-heading">Latest Brain Summary</div>
+      <div id="brainSummary" class="brain-summary">No AI synthesis yet. Run a scan via Brain to populate this panel.</div>
+    </div>
+    <div class="tool-activity-block">
+      <div class="summary-heading">Tool Activity</div>
+      <ul id="toolFeedback" class="tool-feedback"></ul>
+    </div>
   </section>
 
   <!-- Evidence Details Modal -->
@@ -160,6 +179,14 @@
           <div class="detail-section">
             <label>Date:</label>
             <span id="detailDate" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>Confidence:</label>
+            <span id="detailDateConfidence" class="detail-value">-</span>
+          </div>
+          <div class="detail-section">
+            <label>Original stamp:</label>
+            <span id="detailRawTimestamp" class="detail-value">-</span>
           </div>
           <div class="detail-section">
             <label>KPA:</label>

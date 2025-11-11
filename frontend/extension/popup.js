@@ -16,15 +16,17 @@
     btnEnrol:     $('btnEnrol'),
     btnState:     $('btnState'),
     btnScan:      $('btnScan'),
+    btnScanBrain: $('btnScanBrain'),
     btnFinalise:  $('btnFinalise'),
     btnExport:    $('btnExport'),
     btnCompile:   $('btnCompile'),
     btnAsk:       $('btnAsk'),
     btnAskFb:     $('btnAskFeedback'),
+    btnClearChat: $('btnClearChat'),
+
+    chatHistory:  $('chatHistory'),
 
     // Evidence display elements
-    btnRefreshEvidence: $('btnRefreshEvidence'),
-    btnViewDetails:     $('btnViewDetails'),
     btnClearEvidence:   $('btnClearEvidence'),
     evidenceTableBody:  $('evidenceTableBody'),
     evidenceCount:      $('evidenceCount'),
@@ -39,6 +41,11 @@
     answerBox:    $('answerBox'),
     openSound:    $('openSound'),
     brandIcon:    $('brandIcon'),
+    brainSummary: $('brainSummary'),
+    toolFeedback: $('toolFeedback'),
+
+    detailDateConfidence: $('detailDateConfidence'),
+    detailRawTimestamp:   $('detailRawTimestamp'),
   };
 
   // ---------- State Management ----------
@@ -56,6 +63,10 @@
   let currentEvidence = [];
   let selectedEvidenceItem = null;
   let currentSort = { column: 'title', direction: 'asc' };
+  const chatState = { entries: [], maxEntries: 40 };
+  let askConversation = [];
+  const toolEvents = [];
+  const TOOL_EVENT_LIMIT = 30;
 
   // ---------- Enhanced UI Helpers ----------
   function setStatus(text, type = 'disconnected') {
@@ -109,10 +120,10 @@
 
   function enableControls(on) {
     const controls = [
-      els.btnEnrol, els.btnState, els.btnScan,
+      els.btnEnrol, els.btnState, els.btnScan, els.btnScanBrain,
       els.btnFinalise, els.btnExport, els.btnCompile,
-      els.btnAsk, els.btnAskFb, els.btnRefreshEvidence,
-      els.btnViewDetails, els.btnClearEvidence,
+      els.btnAsk, els.btnAskFb, els.btnClearChat,
+      els.btnClearEvidence,
       els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText
     ];
     
@@ -133,17 +144,205 @@
 
   function playOpenSound() {
     if (!els.openSound) return;
-    try { 
-      els.openSound.currentTime = 0; 
+    try {
+      els.openSound.currentTime = 0;
       els.openSound.volume = 0.7;
-      els.openSound.play().catch(()=>{}); 
-    } catch {} 
+      els.openSound.play().catch(()=>{});
+    } catch {}
+  }
+
+  // ---------- Conversational & AI helpers ----------
+  function addChatMessage(role, content, context = 'ask') {
+    if (!content) return;
+    const entry = {
+      role,
+      content: content.toString(),
+      context,
+      ts: new Date(),
+    };
+    const labelMap = { user: 'You', assistant: 'VAMP', system: 'System' };
+    entry.label = labelMap[role] || role;
+    entry.contextLabel = context === 'brain' ? 'Brain Scan' : context === 'ask' ? 'Ask VAMP' : context;
+
+    chatState.entries.push(entry);
+    if (chatState.entries.length > chatState.maxEntries) {
+      chatState.entries.splice(0, chatState.entries.length - chatState.maxEntries);
+    }
+
+    renderChatHistory();
+  }
+
+  function renderChatHistory() {
+    if (!els.chatHistory) return;
+    const target = els.chatHistory;
+    target.innerHTML = '';
+
+    if (!chatState.entries.length) {
+      const empty = document.createElement('div');
+      empty.className = 'chat-line empty';
+      empty.textContent = 'No conversation yet — ask VAMP to begin.';
+      target.appendChild(empty);
+      return;
+    }
+
+    chatState.entries.slice(-chatState.maxEntries).forEach((entry) => {
+      const line = document.createElement('div');
+      line.className = `chat-line ${entry.role}`;
+
+      const meta = document.createElement('div');
+      meta.className = 'chat-meta';
+      const who = document.createElement('span');
+      who.textContent = entry.label;
+      const ctx = document.createElement('span');
+      ctx.className = 'chat-context';
+      ctx.textContent = `${entry.contextLabel} • ${entry.ts.toLocaleTimeString()}`;
+      meta.appendChild(who);
+      meta.appendChild(ctx);
+
+      const content = document.createElement('div');
+      content.className = 'chat-content';
+      content.innerHTML = escapeHtml(entry.content).replace(/\n/g, '<br>');
+
+      line.appendChild(meta);
+      line.appendChild(content);
+      target.appendChild(line);
+    });
+  }
+
+  function recordAskMessage(role, content) {
+    if (!content) return;
+    if (!['user', 'assistant'].includes(role)) return;
+    askConversation.push({ role, content: content.toString() });
+    if (askConversation.length > 20) {
+      askConversation.splice(0, askConversation.length - 20);
+    }
+  }
+
+  function clearAskConversation() {
+    askConversation = [];
+    chatState.entries = chatState.entries.filter(entry => entry.context !== 'ask');
+    renderChatHistory();
+  }
+
+  function describeTimestamp(item) {
+    const iso = item.date || item.modified || item.timestamp || '';
+    const raw = item.raw_timestamp || item.timestamp_relative || '';
+    const estimated = Boolean(item.timestamp_estimated);
+    let confidence = Number(item.timestamp_confidence);
+    if (!Number.isFinite(confidence)) {
+      confidence = estimated ? 0.5 : 0.92;
+    }
+    confidence = Math.max(0, Math.min(1, confidence));
+    const confidencePercent = Math.round(confidence * 100);
+    const displayText = iso ? formatDate(iso) : (raw || 'N/A');
+    const chipClass = estimated ? 'estimated' : 'exact';
+    const badge = estimated ? '≈' : '✔';
+    const tooltipParts = [];
+    if (raw) tooltipParts.push(`Original: ${raw}`);
+    tooltipParts.push(estimated ? 'Confidence estimated from AI synthesis' : 'Captured directly from Outlook');
+    const tooltip = tooltipParts.join(' • ');
+    const chip = `<span class="confidence-chip ${chipClass}" title="${escapeHtml(confidencePercent + '% confidence')}">${badge} ${confidencePercent}%</span>`;
+    return {
+      displayText,
+      confidencePercent,
+      chipClass,
+      badge,
+      tooltip,
+      rawText: raw,
+      estimated,
+      html: `${escapeHtml(displayText)} ${chip}`,
+    };
+  }
+
+  function updateBrainSummary(summary, meta = {}) {
+    if (!els.brainSummary) return;
+    const text = (summary || '').toString().trim();
+    if (!text) {
+      els.brainSummary.textContent = 'No AI synthesis yet. Run a scan via Brain to populate this panel.';
+      return;
+    }
+
+    const extras = [];
+    const added = Number(meta.added);
+    const total = Number(meta.total);
+    if (Number.isFinite(added)) {
+      extras.push(`${added} new item${added === 1 ? '' : 's'}`);
+    }
+    if (Number.isFinite(total)) {
+      extras.push(`${total} total stored`);
+    }
+
+    const metaLine = extras.length ? `<div class="brain-summary-meta">${escapeHtml(extras.join(' • '))}</div>` : '';
+    els.brainSummary.innerHTML = `${escapeHtml(text)}${metaLine}`;
+  }
+
+  function recordToolFeedback(tools, origin = 'ASK') {
+    if (!Array.isArray(tools) || !tools.length) {
+      renderToolFeedback();
+      return;
+    }
+
+    const now = new Date();
+    tools.forEach((tool) => {
+      if (!tool || typeof tool !== 'object') return;
+      const entry = {
+        tool: (tool.tool || tool.action || 'unknown').toString(),
+        status: (tool.status || 'info').toString().toLowerCase(),
+        items: Number(tool.items_found ?? tool.count ?? 0) || 0,
+        total: Number(tool.total_month_items ?? tool.total ?? 0) || 0,
+        note: (tool.error || tool.reason || tool.summary || '').toString(),
+        origin,
+        ts: now,
+      };
+      toolEvents.push(entry);
+    });
+
+    if (toolEvents.length > TOOL_EVENT_LIMIT) {
+      toolEvents.splice(0, toolEvents.length - TOOL_EVENT_LIMIT);
+    }
+
+    renderToolFeedback();
+  }
+
+  function renderToolFeedback() {
+    if (!els.toolFeedback) return;
+    const target = els.toolFeedback;
+    target.innerHTML = '';
+
+    if (!toolEvents.length) {
+      const empty = document.createElement('li');
+      empty.className = 'tool-empty';
+      empty.textContent = 'No tool activity yet.';
+      target.appendChild(empty);
+      return;
+    }
+
+    toolEvents.slice(-TOOL_EVENT_LIMIT).reverse().forEach((entry) => {
+      const li = document.createElement('li');
+      const meta = document.createElement('div');
+      meta.className = 'tool-meta';
+      meta.innerHTML = `<span>${escapeHtml(entry.tool)}</span><span>${escapeHtml(entry.origin)} • ${entry.ts.toLocaleTimeString()}</span>`;
+
+      const body = document.createElement('div');
+      body.className = 'tool-body';
+      const statusClass = entry.status === 'success' ? 'status-success' : entry.status === 'error' ? 'status-error' : 'status-warning';
+      const counts = entry.items ? `Δ ${entry.items}` : 'Δ 0';
+      const total = entry.total ? `Total ${entry.total}` : '';
+      const noteParts = [counts];
+      if (total) noteParts.push(total);
+      if (entry.note) noteParts.push(entry.note);
+      body.innerHTML = `<span class="${statusClass}">${escapeHtml(entry.status)}</span> — ${escapeHtml(noteParts.join(' • '))}`;
+
+      li.appendChild(meta);
+      li.appendChild(body);
+      target.appendChild(li);
+    });
   }
 
   // ---------- Evidence Display Functions ----------
   function updateEvidenceDisplay(evidenceItems) {
     if (!els.evidenceTableBody) return;
-    
+
     currentEvidence = evidenceItems || [];
     
     if (!currentEvidence || currentEvidence.length === 0) {
@@ -170,14 +369,14 @@
       const typeIcon = getEvidenceTypeIcon(item.source);
       const kpaDisplay = getKPADisplay(item.kpa);
       const scoreClass = getScoreClass(item.score);
-      const dateDisplay = formatDate(item.date || item.modified);
+      const tsMeta = describeTimestamp(item);
       const sourceDisplay = getSourceDisplay(item.platform || item.source);
-      
+
       return `
         <tr data-index="${index}" class="${selectedEvidenceItem === index ? 'selected' : ''}">
           <td title="${escapeHtml(item.source)}">${typeIcon}</td>
           <td title="${escapeHtml(item.title || 'No title')}">${truncateText(escapeHtml(item.title || 'No title'), 25)}</td>
-          <td>${dateDisplay}</td>
+          <td class="timestamp-cell" title="${escapeHtml(tsMeta.tooltip)}">${tsMeta.html}</td>
           <td>${kpaDisplay}</td>
           <td class="${scoreClass}">${item.score ? item.score.toFixed(1) : 'N/A'}</td>
           <td title="${escapeHtml(sourceDisplay)}">${truncateText(sourceDisplay, 8)}</td>
@@ -229,8 +428,8 @@
           bVal = b.title || '';
           break;
         case 'date':
-          aVal = new Date(a.date || a.modified || 0);
-          bVal = new Date(b.date || b.modified || 0);
+          aVal = new Date(a.date || a.modified || a.timestamp || 0);
+          bVal = new Date(b.date || b.modified || b.timestamp || 0);
           break;
         case 'kpa':
           aVal = getKPADisplay(a.kpa);
@@ -311,7 +510,15 @@
     // Update modal content
     if ($('detailTitle')) $('detailTitle').textContent = item.title || 'No title';
     if ($('detailSource')) $('detailSource').textContent = item.platform || item.source || 'Unknown';
-    if ($('detailDate')) $('detailDate').textContent = formatDate(item.date || item.modified);
+    const tsMeta = describeTimestamp(item);
+    if ($('detailDate')) $('detailDate').textContent = tsMeta.displayText;
+    if (els.detailDateConfidence) {
+      const modeLabel = tsMeta.estimated ? 'Estimated' : 'Exact';
+      els.detailDateConfidence.textContent = `${tsMeta.confidencePercent}% • ${modeLabel}`;
+    }
+    if (els.detailRawTimestamp) {
+      els.detailRawTimestamp.textContent = tsMeta.rawText || 'Not provided';
+    }
     if ($('detailKPA')) $('detailKPA').textContent = getKPADisplay(item.kpa);
     if ($('detailScore')) $('detailScore').textContent = item.score ? item.score.toFixed(1) : 'N/A';
     if ($('detailSnippet')) $('detailSnippet').textContent = item.snippet || 'No snippet available';
@@ -349,7 +556,9 @@
     if (!dateString) return 'N/A';
     try {
       const date = new Date(dateString);
-      return date.toLocaleDateString();
+      const datePart = date.toLocaleDateString();
+      const timePart = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `${datePart} ${timePart}`;
     } catch {
       return 'N/A';
     }
@@ -606,9 +815,13 @@
         setScanNote(`Complete - ${added} new items, ${total} total`);
         logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
         const brainSummary = data.brain_summary || msg.brain_summary || data.summary || msg.summary || '';
-        if (brainSummary) {
-          logAnswer(`🧠 ${brainSummary}`, 'info');
+        const summaryText = brainSummary || `Scan complete. ${added} new items recorded.`;
+        updateBrainSummary(summaryText, { added, total });
+        if (summaryText) {
+          logAnswer(`🧠 ${summaryText}`, 'info');
         }
+        const toolList = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
+        recordToolFeedback(toolList, 'Brain Scan');
         enableControls(true);
         setStatus('Connected', 'connected');
         stopHeartbeat();
@@ -650,15 +863,42 @@
       // Chat responses
       case 'ASK': {
         const answer = (data.answer || msg.answer || '').toString();
-        if (answer) logAnswer(`🧠 ${answer}`, 'info');
-        enableControls(true);
-        setStatus('Connected', 'connected');
+        const modeRaw = data.mode || msg.mode || 'ask';
+        const mode = typeof modeRaw === 'string' ? modeRaw : 'ask';
+        const tools = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
+        const context = mode === 'brain_scan' ? 'brain' : (mode === 'assessor_strict' ? 'assessor' : 'ask');
+
+        if (mode !== 'brain_scan') {
+          if (tools.length) {
+            recordToolFeedback(tools, 'Ask');
+          } else {
+            recordToolFeedback([], 'Ask');
+          }
+        }
+
+        if (answer) {
+          addChatMessage('assistant', answer, context);
+          if (context === 'ask') {
+            recordAskMessage('assistant', answer);
+          }
+          if (mode !== 'brain_scan') {
+            logAnswer(`🧠 ${answer}`, 'info');
+          }
+        }
+
+        if (mode !== 'brain_scan' || !isBusy) {
+          enableControls(true);
+          setStatus('Connected', 'connected');
+        }
         break;
       }
 
       case 'ASK_FEEDBACK': {
         const answer = (data.answer || msg.answer || '').toString();
-        if (answer) logAnswer(`📋 ${answer}`, 'info');
+        if (answer) {
+          addChatMessage('assistant', answer, 'assessor');
+          logAnswer(`📋 ${answer}`, 'info');
+        }
         enableControls(true);
         setStatus('Connected', 'connected');
         break;
@@ -814,6 +1054,55 @@
     });
   }
 
+  async function onScanBrain() {
+    const s = currentSettings();
+    const { year, month } = getYearMonth();
+    const scanUrl = await resolveScanUrl();
+
+    if (!s.email) {
+      logAnswer('Please enter your email before scanning', 'error');
+      els.email?.focus();
+      return;
+    }
+
+    if (!scanUrl) {
+      logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
+      setScanNote('Waiting for scan URL');
+      return;
+    }
+
+    isBusy = true;
+    enableControls(false);
+    lastPhase = 'auth';
+    lastPct = 5;
+    setProgressPct(5, true);
+    setScanNote('Requesting NWU Brain orchestrator...');
+    setStatus('Scanning...', 'scanning');
+    startHeartbeat();
+
+    addChatMessage('user', 'Scan via Brain orchestrator initiated.', 'brain');
+
+    sendWS({
+      action: 'ASK',
+      mode: 'brain_scan',
+      email: s.email,
+      name: s.name,
+      org: s.org || 'NWU',
+      year,
+      month,
+      url: scanUrl,
+      deep_read: true,
+      messages: [
+        {
+          role: 'user',
+          content: `Run the scan_active connector immediately for ${s.email || 'this user'} using ${scanUrl}. After the connector completes, report how many artefacts were added and the new monthly total.`,
+        }
+      ]
+    });
+
+    logAnswer('Delegating scan to NWU Brain orchestrator...', 'info');
+  }
+
   function onFinaliseMonth() {
     const { year, month } = getYearMonth();
     sendWS({ action: 'FINALISE_MONTH', year, month });
@@ -835,34 +1124,43 @@
   function onAsk() {
     const { year, month } = getYearMonth();
     const q = (els.askText?.value || '').trim();
-    if (!q) { 
+    if (!q) {
       logAnswer('Please type a question', 'error');
       els.askText?.focus();
-      return; 
+      return;
     }
-    
+
     enableControls(false);
     setStatus('Processing...', 'scanning');
+    addChatMessage('user', q, 'ask');
+    recordAskMessage('user', q);
+    const messages = askConversation.map(entry => ({ role: entry.role, content: entry.content }));
     sendWS({
       action: 'ASK',
       year, month,
-      messages: coerceMessages(q),
+      messages,
       mode: 'ask'
     });
     logAnswer('Asking VAMP...', 'info');
   }
 
+  function onClearChat() {
+    clearAskConversation();
+    logAnswer('Chat history cleared.', 'info');
+  }
+
   function onAskFeedback() {
     const { year, month } = getYearMonth();
     const q = (els.askText?.value || '').trim();
-    if (!q) { 
+    if (!q) {
       logAnswer('Please type a request', 'error');
       els.askText?.focus();
-      return; 
+      return;
     }
-    
+
     enableControls(false);
     setStatus('Processing...', 'scanning');
+    addChatMessage('user', q, 'assessor');
     sendWS({
       action: 'ASK_FEEDBACK',
       year, month,
@@ -873,19 +1171,6 @@
   }
 
   // Evidence display handlers
-  function onRefreshEvidence() {
-    refreshEvidenceDisplay();
-  }
-
-  function onViewDetails() {
-    if (selectedEvidenceItem !== null) {
-      const item = currentEvidence[selectedEvidenceItem];
-      showEvidenceDetails(item);
-    } else {
-      logAnswer('Please select an evidence item first', 'warning');
-    }
-  }
-
   function onClearEvidence() {
     clearEvidenceDisplay();
   }
@@ -895,6 +1180,9 @@
     playOpenSound();
     ensureYearMonth();
     restoreSettings();
+    renderChatHistory();
+    renderToolFeedback();
+    updateBrainSummary('', {});
 
     // Enhanced input handling
     els.askText?.addEventListener('focus', () => {
@@ -926,15 +1214,15 @@
     els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
     els.btnState?.addEventListener('click', (e) => { e.preventDefault(); onGetState(); });
     els.btnScan?.addEventListener('click', (e) => { e.preventDefault(); onScanActive(); });
+    els.btnScanBrain?.addEventListener('click', (e) => { e.preventDefault(); onScanBrain(); });
     els.btnFinalise?.addEventListener('click', (e) => { e.preventDefault(); onFinaliseMonth(); });
     els.btnExport?.addEventListener('click', (e) => { e.preventDefault(); onExportMonth(); });
     els.btnCompile?.addEventListener('click', (e) => { e.preventDefault(); onCompileYear(); });
     els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
     els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
+    els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
 
     // Evidence display listeners
-    els.btnRefreshEvidence?.addEventListener('click', (e) => { e.preventDefault(); onRefreshEvidence(); });
-    els.btnViewDetails?.addEventListener('click', (e) => { e.preventDefault(); onViewDetails(); });
     els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
     els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
     els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
