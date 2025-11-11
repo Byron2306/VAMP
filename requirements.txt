@@ -8,3 +8,4 @@ pillow
 pytesseract
 cryptography
 python-dotenv
+flask-socketio
