@@ -7,3 +7,4 @@ websockets
 pillow
 pytesseract
 cryptography
+python-dotenv
