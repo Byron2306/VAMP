@@ -670,7 +670,7 @@
     setStatus('Connecting...', 'scanning');
 
     try {
-      ws = new WebSocket(wsUrlCurrent);
+      SocketIOManager.connect(wsUrlCurrent);
     } catch (e) {
       setStatus('Connection Failed', 'error');
       logAnswer(`Connection error: ${e.message}`, 'error');
@@ -678,7 +678,7 @@
       return;
     }
 
-    ws.onopen = () => {
+    SocketIOManager.on('connect', () => {
       setStatus('Connected', 'connected');
       reconnectDelayMs = 1000;
       enableControls(true);
@@ -693,14 +693,14 @@
       } catch {}
     };
 
-    ws.onmessage = (ev) => handleMessage(ev.data);
+    SocketIOManager.on('message', (ev) => handleMessage(ev.data);
 
-    ws.onerror = (error) => {
+    SocketIOManager.on('error', (error) => {
       setStatus('Connection Error', 'error');
       logAnswer('WebSocket connection error', 'error');
     };
 
-    ws.onclose = (event) => {
+    SocketIOManager.on('disconnect', (event) => {
       setStatus('Disconnected', 'disconnected');
       if (event.code !== 1000) {
         logAnswer(`Connection closed: ${event.reason || 'Unknown reason'}`, 'error');
@@ -715,7 +715,7 @@
       connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
       setTimeout(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify(obj));
+          SocketIOManager.send(obj);
           logAnswer('Command sent after reconnect', 'success');
         } else {
           logAnswer('Failed to reconnect for command', 'error');
@@ -725,7 +725,7 @@
     }
     
     try {
-      ws.send(JSON.stringify(obj));
+      SocketIOManager.send(obj);
     } catch (e) {
       logAnswer(`Failed to send command: ${e.message}`, 'error');
     }
@@ -1300,4 +1300,5 @@
     }
   });
 })();
+
 
