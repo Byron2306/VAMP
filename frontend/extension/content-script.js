@@ -31,6 +31,47 @@
     if (arr.length < cap) arr.push(obj);
   }
 
+  // Shared Outlook selector handling ---------------------------------------------------
+  const DEFAULT_OUTLOOK_SELECTORS = [
+    '[data-convid]',
+    '[data-conversation-id]',
+    '[data-conversationid]',
+    '[data-item-id]',
+    '[role="listitem"][data-convid]',
+    '[role="listitem"][data-conversation-id]',
+    '[role="listitem"][data-item-id]',
+    '[aria-label*="Message list"] [role="listitem"]',
+    '[data-automation-id="messageList"] [role="option"]',
+    '[data-tid="messageListContainer"] [role="option"]',
+    '[data-app-section="Mail"] [role="treeitem"]',
+    '[role="option"][data-convid]',
+    '[role="option"][data-item-id]'
+  ];
+
+  let sharedOutlookSelectors = DEFAULT_OUTLOOK_SELECTORS.slice();
+  (function preloadSharedSelectors() {
+    try {
+      const sharedUrl = (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.getURL)
+        ? chrome.runtime.getURL("shared/outlook_selectors.json")
+        : null;
+      if (!sharedUrl) return;
+      fetch(sharedUrl)
+        .then(resp => (resp.ok ? resp.json() : null))
+        .then(data => {
+          if (Array.isArray(data) && data.length) {
+            sharedOutlookSelectors = data.filter(Boolean);
+          }
+        })
+        .catch(() => {});
+    } catch {}
+  })();
+
+  function outlookSelectors() {
+    return sharedOutlookSelectors && sharedOutlookSelectors.length
+      ? sharedOutlookSelectors
+      : DEFAULT_OUTLOOK_SELECTORS;
+  }
+
   function pageHost() {
     try { return location.host || ""; } catch { return ""; }
   }
@@ -58,20 +99,17 @@
   // ---- Outlook Office365 ----
   function scrapeOutlook() {
     const out = [];
+    const seenSubjects = new Set();
     gentleScrollToBottom();
 
-    // Enhanced Office365 selectors
-    const office365Selectors = [
-      '[data-convid]', // Conversation items
-      '[role="listitem"][data-item-id]', // Message list items
-      '.ms-List-cell', // List cells
-      '[data-automation-id="messageList"] [role="option"]', // Message list
-      '[data-tid="messageListContainer"] div[role="button"]', // Message container
-      '[data-app-section="Mail"] [role="treeitem"]' // Mail folder items
-    ];
+    const MAX_ITEMS = 500;
+    const selectors = outlookSelectors();
 
-    for (const selector of office365Selectors) {
+    for (const selector of selectors) {
       const rows = document.querySelectorAll(selector);
+      if (typeof console !== "undefined" && console.debug) {
+        console.debug("VAMP Outlook selector", selector, "matched", rows.length, "nodes");
+      }
       for (const row of rows) {
         let subject = "";
         let hasAttachment = false;
@@ -98,15 +136,20 @@
         }
 
         if (subject && subject.length > 3) {
+          const hashKey = `${subject.toLowerCase()}::${row.getAttribute("data-convid") || row.getAttribute("data-item-id") || row.getAttribute("data-conversation-id") || row.getAttribute("data-conversationid") || ""}`;
+          if (seenSubjects.has(hashKey)) {
+            continue;
+          }
+          seenSubjects.add(hashKey);
           cappedPush(out, {
             source: "Outlook Office365",
             subject: hasAttachment ? `${subject} (attachment)` : subject,
             size: 0
-          }, 200);
+          }, MAX_ITEMS);
         }
-        if (out.length >= 200) break;
+        if (out.length >= MAX_ITEMS) break;
       }
-      if (out.length >= 200) break;
+      if (out.length >= MAX_ITEMS) break;
     }
     return out;
   }

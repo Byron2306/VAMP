@@ -1,7 +1,18 @@
+from __future__ import annotations
+
+import os
+import re
+from typing import Any, Dict, List
 
 from playwright.async_api import async_playwright
-from typing import List, Dict, Any
-import re
+
+try:
+    from .outlook_selectors import OUTLOOK_ROW_SELECTORS
+except ImportError:  # pragma: no cover - legacy entrypoint support
+    from outlook_selectors import OUTLOOK_ROW_SELECTORS  # type: ignore
+
+OUTLOOK_MAX_ROWS = int(os.getenv("VAMP_OUTLOOK_MAX_ROWS", "500"))
+OUTLOOK_RETRY_WAIT_MS = int(os.getenv("VAMP_OUTLOOK_RETRY_WAIT_MS", "1500"))
 
 
 def _squash(text: str) -> str:
@@ -94,28 +105,57 @@ async def _extract_row_meta(row: Any) -> Dict[str, str]:
         return {}
 
 
+async def _wait_for_preview_content(page: Any, timeout: int = 6000) -> bool:
+    try:
+        await page.wait_for_function(
+            "() => {\n"
+            "  const doc = document.querySelector('div[role=\\'document\\']') ||"
+            "              document.querySelector('[aria-label*="Message body"]');\n"
+            "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
+            "}",
+            timeout=timeout,
+        )
+        return True
+    except Exception:
+        return False
+
+
 async def scrape_outlook(page) -> List[Dict]:
     await page.wait_for_load_state("networkidle")
-    await _soft_scroll(page)
     results: List[Dict] = []
+    seen: set[str] = set()
 
-    selectors = [
-        "div[role='listitem'][data-convid]",
-        "div[role='listitem'][data-conversation-id]",
-        "[aria-label*='Message list'] div[role='listitem']",
-        "div[role='option']",
-    ]
+    await _soft_scroll(page, times=15)
 
     rows: List[Any] = []
-    for sel in selectors:
-        rows = await page.query_selector_all(sel)
+    selector_hits: List[tuple[str, int]] = []
+
+    for attempt in range(3):
+        rows = []
+        selector_hits.clear()
+        for selector in OUTLOOK_ROW_SELECTORS:
+            try:
+                nodes = await page.query_selector_all(selector)
+            except Exception:
+                nodes = []
+            if not nodes:
+                continue
+            selector_hits.append((selector, len(nodes)))
+            rows.extend(nodes)
+
         if rows:
             break
+
+        await _soft_scroll(page, times=10 + attempt * 5)
+        await page.wait_for_timeout(OUTLOOK_RETRY_WAIT_MS)
 
     if not rows:
         rows = await page.query_selector_all("div[role='listitem']")
 
-    for idx, item in enumerate(rows[:25]):
+    for idx, item in enumerate(rows):
+        if len(results) >= OUTLOOK_MAX_ROWS:
+            break
+
         meta = await _extract_row_meta(item)
         subject = _squash(meta.get("subject", "")) or "(no subject)"
         sender = _squash(meta.get("sender", "")) or "(unknown sender)"
@@ -128,6 +168,16 @@ async def scrape_outlook(page) -> List[Dict]:
         if not preview and text_blob:
             preview = text_blob
 
+        dedup_key = "::".join([
+            convo_id.lower(),
+            subject.lower(),
+            sender.lower(),
+            when.lower(),
+        ])
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
+
         try:
             await item.scroll_into_view_if_needed()
         except Exception:
@@ -138,10 +188,19 @@ async def scrape_outlook(page) -> List[Dict]:
 
         body = ""
         try:
-            await item.click(timeout=3000)
-            await page.wait_for_timeout(800)
+            await item.click(timeout=4000)
+            ready = await _wait_for_preview_content(page)
+            if not ready:
+                await page.wait_for_timeout(500)
             html = await try_click_and_extract(page, "div[role='document']", lambda el: el.inner_html())
             body = clean_text(html)
+            if not body:
+                alt_html = await try_click_and_extract(
+                    page,
+                    "[aria-label*='Message body']",
+                    lambda el: el.inner_html(),
+                )
+                body = clean_text(alt_html)
         except Exception as e:
             results.append({
                 "id": f"outlook_error_{idx}",

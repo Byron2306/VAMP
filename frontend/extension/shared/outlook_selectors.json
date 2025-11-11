@@ -1,0 +1,15 @@
+[
+  "[data-convid]",
+  "[data-conversation-id]",
+  "[data-conversationid]",
+  "[data-item-id]",
+  "[role=\"listitem\"][data-convid]",
+  "[role=\"listitem\"][data-conversation-id]",
+  "[role=\"listitem\"][data-item-id]",
+  "[aria-label*=\"Message list\"] [role=\"listitem\"]",
+  "[data-automation-id=\"messageList\"] [role=\"option\"]",
+  "[data-tid=\"messageListContainer\"] [role=\"option\"]",
+  "[data-app-section=\"Mail\"] [role=\"treeitem\"]",
+  "[role=\"option\"][data-convid]",
+  "[role=\"option\"][data-item-id]"
+]
