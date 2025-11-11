@@ -23,7 +23,6 @@ const SocketIOManager = (() => {
           resolve(socket);
           return;
         }
-
         try {
           socket = io(url, {
             reconnection: true,
@@ -41,26 +40,51 @@ const SocketIOManager = (() => {
             resolve(socket);
           });
 
-          socket.on('disconnect', () => {
-            console.log('[SocketIO] Disconnected');
+          socket.on('disconnect', (reason) => {
+            console.log('[SocketIO] Disconnected - Reason:', reason);
             if (listeners['disconnect']) {
-              listeners['disconnect'].forEach(cb => cb({ type: 'close' }));
+              listeners['disconnect'].forEach(cb => cb({ 
+                type: 'close', 
+                code: reason === 'io server disconnect' ? 1000 : 1006,
+                reason: reason
+              }));
             }
           });
 
           socket.on('error', (error) => {
             console.error('[SocketIO] Error:', error);
             if (listeners['error']) {
-              listeners['error'].forEach(cb => cb({ type: 'error', message: error }));
+              listeners['error'].forEach(cb => cb({ 
+                type: 'error', 
+                message: error 
+              }));
             }
-            reject(new Error(error));
+            // Don't reject here - let the connection retry
           });
 
           socket.on('message', (data) => {
             if (listeners['message']) {
-              listeners['message'].forEach(cb => cb({ data: JSON.stringify(data) }));
+              listeners['message'].forEach(cb => cb({ 
+                data: typeof data === 'string' ? data : JSON.stringify(data) 
+              }));
             }
           });
+
+          // Handle generic events that might be emitted as messages
+          socket.onAny((event, data) => {
+            console.log('[SocketIO] Event received:', event, data);
+            if (event !== 'connect' && event !== 'disconnect' && event !== 'error') {
+              if (listeners['message']) {
+                listeners['message'].forEach(cb => cb({ 
+                  data: JSON.stringify({ 
+                    action: event,
+                    ...data 
+                  }) 
+                }));
+              }
+            }
+          });
+
         } catch (error) {
           console.error('[SocketIO] Connection error:', error);
           reject(error);
@@ -77,10 +101,17 @@ const SocketIOManager = (() => {
 
     send(data) {
       if (!socket || !socket.connected) {
+        console.warn('[SocketIO] Not connected - cannot send data');
         return false;
       }
       try {
-        socket.emit('message', typeof data === 'string' ? JSON.parse(data) : data);
+        // Convert to object if string
+        const payload = typeof data === 'string' ? JSON.parse(data) : data;
+        
+        // Emit as generic message with action embedded
+        const action = payload.action || 'message';
+        console.log('[SocketIO] Sending action:', action);
+        socket.emit('message', payload);
         return true;
       } catch (error) {
         console.error('[SocketIO] Send error:', error);
@@ -89,7 +120,9 @@ const SocketIOManager = (() => {
     },
 
     on(event, callback) {
-      if (!listeners[event]) listeners[event] = [];
+      if (!listeners[event]) {
+        listeners[event] = [];
+      }
       listeners[event].push(callback);
     },
 
