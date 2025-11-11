@@ -187,5 +187,39 @@ def update_apply() -> Dict[str, object]:
 def update_rollback() -> Dict[str, object]:
     return agent_state().rollback()
 
+@api.route("/scan/active", methods=["POST"])
+@json_response
+def scan_active() -> Dict[str, object]:
+    """Trigger an active scan on a platform."""
+    state = agent_state()
+    payload = request.get_json(force=True, silent=True) or {}
+    
+    email = str(payload.get("email", ""))
+    url = str(payload.get("url", ""))
+    year = int(payload.get("year", 2025))
+    month = int(payload.get("month", 1))
+    
+    from ..vamp_runner import run_scan_active
+    
+    try:
+        result = run_scan_active(
+            email=email,
+            url=url,
+            year=year,
+            month=month
+        )
+        return {"status": "completed", "result": result}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}, 500
+
+@api.route("/scan/status", methods=["GET"])
+@json_response
+def scan_status() -> Dict[str, object]:
+    """Get status of recent scans."""
+    state = agent_state()
+    records = state.evidence_records()
+    return {"scans": records, "total": len(records)}
+
+
 
 __all__ = ["api", "agent_state", "AgentAppState"]
