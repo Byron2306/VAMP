@@ -16,9 +16,15 @@ It uses **Playwright** for authenticated browser automation, **NWU Brain** for s
 ## 🏗 System Architecture
 
 ```txt
-Browser Extension ↔ backend.ws_bridge ↔ backend.vamp_agent ↔ NWU Brain (scoring)
-                          ↑
-                 backend.deepseek_client (Ollama)
+Unified Agent Server (backend.app_server)
+├── REST API (/api/*)
+│   ├── Auth vault + audit (backend.agent_app.auth_manager)
+│   ├── Connector plugins (backend.agent_app.plugin_manager)
+│   ├── Evidence vault (backend.agent_app.evidence_store)
+│   └── Self-update status (backend.agent_app.update_manager)
+└── WebSocket bridge / automation runtimes
+    ├── backend.ws_bridge ↔ frontend extension
+    └── backend.vamp_agent ↔ NWU Brain (scoring)
 ```
 
 ---
@@ -29,11 +35,15 @@ Browser Extension ↔ backend.ws_bridge ↔ backend.vamp_agent ↔ NWU Brain (sc
 VAMP/
 ├── README.md
 ├── backend/                   # Python backend package
+│   ├── agent_app/             # Agent-as-app runtime (vault, plugins, API)
 │   ├── data/
+│   │   ├── agent_app/         # Connector manifests + persisted config
 │   │   ├── nwu_brain/         # Scoring manifest + policy knowledge base
 │   │   ├── states/            # Browser storage state (created at runtime)
 │   │   └── store/             # User evidence store (created at runtime)
+│   ├── platform_plugins/      # Built-in connector implementations
 │   ├── nwu_brain/             # NWU scorer implementation
+│   ├── app_server.py
 │   ├── deepseek_client.py
 │   ├── vamp_agent.py
 │   ├── vamp_master.py
@@ -52,15 +62,17 @@ VAMP/
 
 ## 🚀 Features
 
-- 🔐 Uses live authenticated sessions (via persistent browser contexts)
+- 🔐 Agent-managed auth: OAuth/device-code flows captured, encrypted, audited, and rotated entirely in-app
 - 🧠 Full content scraping + keyword scoring
 - 📜 Auto-scroll & deep content extraction
-- 💾 Saves storage states (no repeated login)
+- 💾 Secrets vaulted at rest, plus durable browser storage states (no leaked env vars)
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
 - 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every DeepSeek/Ollama prompt
 - 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
-- 🧱 Modular design: easy to extend per platform
+- 🧱 Modular plugin design: connectors can be enabled/disabled or reconfigured live from the agent dashboard
+- 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
+- 🔄 Self-update checks and rollback orchestration managed by the agent
 - 🤖 Ollama-driven orchestration can trigger live VAMP scans directly from chat questions
 
 ---
@@ -80,6 +92,26 @@ pip install -r requirements.txt
 playwright install
 ```
 
+### 3. ▶️ Start the unified agent server
+
+```bash
+python -m backend.app_server
+```
+
+The server exposes a REST API on `http://localhost:8080/api/*` that powers:
+
+- `/api/health` – consolidated diagnostics
+- `/api/connectors` – manage platform plugins (enable/disable/update without restarts)
+- `/api/auth/*` – rotate credentials, inspect login history, manage OAuth tokens
+- `/api/evidence` – browse or purge retained evidence with chain-of-custody logs
+- `/api/updates/*` – self-update checks, apply, and rollback
+
+> `backend.ws_bridge` and the browser extension now communicate via the agent server. Existing automation entrypoints (`vamp_agent.py`) continue to function but source credentials and configuration exclusively from the agent runtime.
+
+### 4. 🖥 Launch the built-in dashboard (optional)
+
+Open `frontend/dashboard/index.html` in a modern browser to view health metrics, toggle connectors, inspect auth sessions, browse evidence, and trigger self-updates. The page speaks directly to the agent API—no additional build step required.
+
 ### 3. 🧬 Set Environment Variables
 
 ```powershell
@@ -94,37 +126,33 @@ $env:OLLAMA_API_KEY   = "<token>"
 
 > `deepseek_client.py` will automatically detect Ollama-style endpoints (`/api/chat` or `/api/generate`) and adjust the payload/headers. If you only set the Ollama variables, the DeepSeek defaults are ignored.
 
-### Headless Outlook / OneDrive / Google Drive login
+### Agent-managed login and credential rotation
 
-To keep Chromium hidden while still authenticating, provide service credentials via environment variables before starting the backend:
+Use the REST API (or call helpers from Python) to seed OAuth/device-code sessions and password vault entries. Examples:
 
 ```bash
-export VAMP_OUTLOOK_USERNAME="user@nwu.ac.za"
-export VAMP_OUTLOOK_PASSWORD="<app-password-or-sso-secret>"
-export VAMP_ONEDRIVE_USERNAME="user@nwu.ac.za"   # optional, defaults to email argument
-export VAMP_ONEDRIVE_PASSWORD="<password>"
-export VAMP_GOOGLE_USERNAME="user@nwu.ac.za"
-export VAMP_GOOGLE_PASSWORD="<password>"
+curl -X POST http://localhost:8080/api/auth/password \
+  -H 'Content-Type: application/json' \
+  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "password": "<secret>"}'
+
+curl -X POST http://localhost:8080/api/auth/session \
+  -H 'Content-Type: application/json' \
+  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "access_token": "<token>", "refresh_token": "<refresh>", "expires_in": 3600}'
 ```
 
-When these are present the Playwright agent attempts a full headless login, captures a persistent storage state, and skips the manual Chromium window entirely. If the automated login fails or credentials are omitted the previous interactive flow is used as a fallback.
+The agent encrypts and stores credentials in its internal vault (`backend/data/states/agent_app`), rotates keys on demand, and maintains an append-only audit log (`auth.log`). The Playwright automation consumes credentials through the agent runtime—no environment variables or shell history leaks required.
 
 ---
 
 ## 🧠 Usage
 
-### Start the backend WebSocket bridge:
+### Start the backend WebSocket bridge (optional for extension workflows):
 
 ```bash
 python -m backend.ws_bridge
 ```
 
-It will:
-- Listen for frontend requests
-- Trigger scans via `run_scan_active`
-- Return scored, deduped results
-
-> Runtime data (Chrome storage states and evidence store) is written to `backend/data/states/<service>/<user>.json` and `backend/data/store/`.
+The bridge now relies on the agent server for configuration and authentication. Runtime data (Chrome storage states, vault metadata, evidence, audit logs) is surfaced through the dashboard API instead of ad-hoc file inspection.
 
 ---
 

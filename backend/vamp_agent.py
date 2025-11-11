@@ -45,6 +45,7 @@ except Exception as exc:  # pragma: no cover - optional dependency
     _OCR_ERROR = str(exc)
 
 from . import BRAIN_DATA_DIR, STATE_DIR
+from .agent_app.app_state import agent_state
 from .outlook_selectors import OUTLOOK_ROW_SELECTORS
 from .vamp_store import _uid
 from .nwu_brain.scoring import NWUScorer
@@ -84,20 +85,11 @@ BROWSER_CONFIG = {
 OUTLOOK_MAX_ROWS = int(os.getenv("VAMP_OUTLOOK_MAX_ROWS", "500"))
 OUTLOOK_RETRY_WAIT_MS = int(os.getenv("VAMP_OUTLOOK_RETRY_WAIT_MS", "1500"))
 
-# Optional credential-based automation (service -> env var names)
-SERVICE_CREDENTIAL_ENV = {
-    "outlook": {
-        "username": os.getenv("VAMP_OUTLOOK_USERNAME", "").strip(),
-        "password": os.getenv("VAMP_OUTLOOK_PASSWORD", "").strip(),
-    },
-    "onedrive": {
-        "username": os.getenv("VAMP_ONEDRIVE_USERNAME", "").strip(),
-        "password": os.getenv("VAMP_ONEDRIVE_PASSWORD", "").strip(),
-    },
-    "drive": {
-        "username": os.getenv("VAMP_GOOGLE_USERNAME", "").strip(),
-        "password": os.getenv("VAMP_GOOGLE_PASSWORD", "").strip(),
-    },
+# Mapping of env variable fallbacks for services
+SERVICE_ENV_VARS = {
+    "outlook": ("VAMP_OUTLOOK_USERNAME", "VAMP_OUTLOOK_PASSWORD"),
+    "onedrive": ("VAMP_ONEDRIVE_USERNAME", "VAMP_ONEDRIVE_PASSWORD"),
+    "drive": ("VAMP_GOOGLE_USERNAME", "VAMP_GOOGLE_PASSWORD"),
 }
 
 # User agent that looks like a real browser
@@ -310,12 +302,32 @@ def _credentials_for(service: Optional[str], identity: Optional[str]) -> Optiona
     if not service:
         return None
 
-    service_conf = SERVICE_CREDENTIAL_ENV.get(service, {})
-    username = service_conf.get("username") or (identity or "").strip()
-    password = service_conf.get("password")
+    identity_key = (identity or "").strip() or "default"
+    manager = agent_state().auth_manager
+
+    # Prefer secrets stored in the agent vault
+    username = manager.username_for(service, identity_key) or (identity or "").strip()
+    password = manager.password_for(service, identity_key)
+
+    if not password and identity_key != "default":
+        password = manager.password_for(service, "default")
+    if not username:
+        username = manager.username_for(service, "default") or (identity or "").strip()
 
     if username and password:
         return username, password
+
+    # Fallback to environment variables for backwards compatibility
+    env_keys = SERVICE_ENV_VARS.get(service, (None, None))
+    if env_keys[0] and env_keys[1]:
+        env_username = os.getenv(env_keys[0], "").strip()
+        env_password = os.getenv(env_keys[1], "").strip()
+        if not username and env_username:
+            username = env_username
+        if not password and env_password:
+            password = env_password
+        if username and password:
+            return username, password
 
     logger.debug("No credentials available for automated %s login", service)
     return None
