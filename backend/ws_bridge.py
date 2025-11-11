@@ -15,7 +15,7 @@ import os
 import re
 import traceback
 from functools import partial
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 import websockets
 try:  # websockets >= 10
@@ -112,6 +112,8 @@ async def _execute_action(
     action: Dict[str, Any],
     base_msg: Dict[str, Any],
     uid: str,
+    *,
+    progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
 ) -> Dict[str, Any]:
     """Execute an orchestrator action and return an observation dict."""
 
@@ -158,7 +160,13 @@ async def _execute_action(
     progress_log: List[Dict[str, Any]] = []
 
     async def capture_progress(progress: float, status: str) -> None:
-        progress_log.append({"progress": progress, "status": status})
+        progress_entry = {"progress": progress, "status": status}
+        progress_log.append(progress_entry)
+        if progress_cb:
+            try:
+                await progress_cb(progress, status)
+            except Exception as exc:  # pragma: no cover - progress reporting best effort
+                logger.debug(f"Progress callback failed: {exc}")
 
     try:
         results = await run_scan_active_ws(
@@ -214,32 +222,98 @@ async def _execute_action(
     return observation
 
 
-async def _orchestrate_answer(msg: Dict[str, Any], question: str) -> Dict[str, Any]:
+async def _orchestrate_answer(
+    msg: Dict[str, Any],
+    question: str,
+    *,
+    progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
+    purpose: str = "ask",
+) -> Dict[str, Any]:
     """Drive an LLM loop that can invoke connectors before producing an answer."""
 
     if not ask_deepseek:
         return {"answer": f"[VAMP AI] Received: {question}", "tools": []}
 
     uid = _uid_from(msg)
+    email = (msg.get("email") or "").strip() or uid
+    year = int(msg.get("year") or _dt.datetime.utcnow().year)
+    month = int(msg.get("month") or _dt.datetime.utcnow().month)
     loop = asyncio.get_running_loop()
     history: List[Tuple[str, str]] = []
     tool_summaries: List[Dict[str, Any]] = []
-    max_steps = 3
+    max_steps = 3 if purpose == "scan" else 5
+
+    existing_items: List[Dict[str, Any]] = []
+    evidence_stats: Dict[str, Any] = {}
+
+    try:
+        existing_items = store.get_evidence_for_display(email, year, month)
+    except Exception:
+        existing_items = []
+
+    try:
+        evidence_stats = store.get_evidence_stats(email, year)
+    except Exception:
+        evidence_stats = {}
+
+    evidence_overview = (
+        f"Evidence store for {year}-{month:02d}: {len(existing_items)} items"
+    )
+    scored_items = evidence_stats.get("scored_items") if evidence_stats else None
+    average_score = evidence_stats.get("average_score") if evidence_stats else None
+    if isinstance(scored_items, int) and scored_items:
+        try:
+            avg = float(average_score) if average_score is not None else None
+        except (TypeError, ValueError):
+            avg = None
+        if avg is not None:
+            evidence_overview += f" (avg score {avg:.2f} across {scored_items} scored items)"
+    locked_months = evidence_stats.get("locked_months") if evidence_stats else []
+    if isinstance(locked_months, list) and month in locked_months:
+        evidence_overview += ", month locked"
+
+    sample_lines: List[str] = []
+    for item in existing_items[:3]:
+        title = item.get("title") or item.get("subject") or item.get("name") or "(untitled)"
+        platform = item.get("platform") or item.get("source") or ""
+        score = item.get("score")
+        try:
+            score_display = f"{float(score):.1f}" if isinstance(score, (int, float)) else "n/a"
+        except Exception:
+            score_display = "n/a"
+        band = item.get("band") or ""
+        band_display = f" ({band})" if band else ""
+        sample_lines.append(
+            f"- {title} [{platform}] → score {score_display}{band_display}"
+        )
+
+    evidence_samples = "\n".join(sample_lines) if sample_lines else "(no stored evidence summaries)"
 
     connector_doc = json.dumps(_CONNECTOR_SPEC, ensure_ascii=False, indent=2)
     context_line = (
-        f"User context → email: {msg.get('email') or uid}, "
-        f"year: {msg.get('year') or _dt.datetime.utcnow().year}, "
-        f"month: {msg.get('month') or _dt.datetime.utcnow().month}"
+        f"User context → email: {email}, year: {year}, month: {month}"
     )
 
-    instructions = (
-        "You are the VAMP Autop orchestrator. Plan how to answer questions using live connectors when necessary. "
-        "If you need fresh evidence, call a connector by responding with ONLY a JSON object inside a ```tool``` block. "
-        "Example: ```tool\\n{\"tool\":\"scan_active\",\"arguments\":{\"url\":\"https://outlook.office.com/mail/\",\"email\":\"user@nwu.ac.za\"}}\\n```. "
-        "After a connector runs, review the tool result from the history and continue reasoning. "
-        "When you are ready to respond, provide a concise written answer with citations of the evidence summaries."
+    base_instructions = (
+        "You are the NWU Brain Autop orchestrator for VAMP. Reason in deliberate steps before replying. "
+        "Always inspect the stored NWU evidence summaries before deciding whether you need a live connector. "
     )
+
+    if purpose == "scan":
+        instructions = (
+            base_instructions
+            + "Your task is to run the scan_active connector exactly once using the provided context. "
+            "Call scan_active immediately, wait for the observation, then summarise the extraction outcome for the UI. "
+            "Do not produce a final answer until after you have reviewed the tool response."
+        )
+    else:
+        instructions = (
+            base_instructions
+            + "If you need fresh evidence, call a connector by responding with ONLY a JSON object inside a ```tool``` block. "
+            "Example: ```tool\\n{\"tool\":\"scan_active\",\"arguments\":{\"url\":\"https://outlook.office.com/mail/\",\"email\":\"user@nwu.ac.za\"}}\\n```. "
+            "After a connector runs, review the tool result from the history and continue reasoning. "
+            "When you are ready to respond, provide a concise written answer with citations of the evidence summaries."
+        )
 
     for step in range(max_steps):
         history_lines = []
@@ -251,6 +325,9 @@ async def _orchestrate_answer(msg: Dict[str, Any], question: str) -> Dict[str, A
             instructions,
             f"Available connectors: {connector_doc}",
             context_line,
+            evidence_overview,
+            "Stored evidence samples:",
+            evidence_samples,
             "History:" if history_lines else "History: (none)",
             "\n".join(history_lines) if history_lines else "",
             "Question:",
@@ -278,7 +355,7 @@ async def _orchestrate_answer(msg: Dict[str, Any], question: str) -> Dict[str, A
             continue
 
         if action:
-            observation = await _execute_action(action, msg, uid)
+            observation = await _execute_action(action, msg, uid, progress_cb=progress_cb)
             tool_summaries.append(observation)
             history.append(("tool", json.dumps(observation, ensure_ascii=False)))
             continue
@@ -411,35 +488,119 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
         return
 
     # Progress callback that sends updates over WebSocket
-    async def on_progress(progress: float, status: str):
-        try:
-            await ws.send(ok("SCAN_ACTIVE/PROGRESS", {
-                "progress": progress,
-                "status": status
-            }))
-        except:
-            pass  # Client may disconnect
+    async def on_progress(progress: float, status: str) -> None:
+        pct = float(progress)
+        payload = {
+            "pct": pct,
+            "progress": max(0.0, min(1.0, pct / 100.0)),
+            "status": status or "",
+        }
+        await _safe_send(ws, ok("SCAN_ACTIVE/PROGRESS", payload), "SCAN_ACTIVE/PROGRESS")
+
+    async def _send_complete(added: int, total: int, summary: str, tools: Optional[List[Dict[str, Any]]] = None) -> None:
+        payload: Dict[str, Any] = {
+            "added": added,
+            "total_evidence": total,
+        }
+        if summary:
+            payload["brain_summary"] = summary
+        if tools:
+            payload["tools"] = tools
+        await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", payload), "SCAN_ACTIVE/COMPLETE")
+
+    orchestrated: Optional[Dict[str, Any]] = None
 
     try:
+        if ask_deepseek:
+            brain_msg = dict(msg)
+            brain_msg.setdefault("email", email or uid)
+            brain_msg.setdefault("year", year)
+            brain_msg.setdefault("month", month)
+            brain_msg.setdefault("url", url)
+            brain_msg.setdefault("deep_read", deep_read)
+
+            scan_question = (
+                "Execute the scan_active connector for the provided user context right now. "
+                f"Target URL: {url}. Deep read: {'true' if deep_read else 'false'}. "
+                "After the connector finishes, summarise the scan outcome, including how many new evidence items were stored."
+            )
+
+            orchestrated = await _orchestrate_answer(
+                brain_msg,
+                scan_question,
+                progress_cb=on_progress,
+                purpose="scan",
+            )
+
+    except Exception as exc:
+        logger.warning(f"AI-orchestrated scan failed, falling back: {exc}")
+        orchestrated = None
+
+    try:
+        added = 0
+        total = 0
+        summary_text = ""
+        tool_payload: List[Dict[str, Any]] = []
+
+        if orchestrated and orchestrated.get("tools"):
+            raw_tools = orchestrated.get("tools", [])
+            tool_payload = [dict(t) for t in raw_tools if isinstance(t, dict)]
+            for obs in tool_payload:
+                if (obs.get("tool") or "").lower() == "scan_active" and obs.get("status") == "success":
+                    try:
+                        added = int(obs.get("items_found", 0) or 0)
+                    except Exception:
+                        added = 0
+                    try:
+                        total = int(obs.get("total_month_items", 0) or 0)
+                    except Exception:
+                        total = 0
+            summary_text = str(orchestrated.get("answer") or "").strip()
+
+            if added or total:
+                await on_progress(95.0, "Summarising NWU Brain results...")
+                await on_progress(100.0, "Scan complete")
+                await _send_complete(added, total, summary_text, tool_payload)
+                logger.info(f"AI scan complete for {uid}: +{added}, total={total}")
+                return
+
+        # Fallback to direct Playwright execution if AI did not produce a tool observation
         results = await run_scan_active_ws(
             email=email or uid,
             year=year,
             month=month,
             url=url,
             deep_read=deep_read,
-            progress_callback=on_progress
+            progress_callback=on_progress,
         )
 
+        results = results or []
         if not results:
-            await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", {"added": 0, "total_evidence": 0}), "SCAN_ACTIVE/COMPLETE")
+            await on_progress(100.0, "Scan complete — no new items")
+            await _send_complete(0, 0, "The scan completed without finding new evidence artefacts.")
             return
 
         month_doc = store.add_items(uid, year, month, results)
         added = len(results)
         total = len(month_doc.get("items", []))
+        summary_text = (
+            f"Manual fallback added {added} new evidence items. "
+            f"The month now tracks {total} total artefacts."
+        )
 
-        await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", {"added": added, "total_evidence": total}), "SCAN_ACTIVE/COMPLETE")
-        logger.info(f"Scan complete: +{added}, total={total}")
+        fallback_tools = [
+            {
+                "tool": "scan_active",
+                "status": "success",
+                "items_found": added,
+                "total_month_items": total,
+                "mode": "fallback",
+            }
+        ]
+
+        await on_progress(100.0, "Scan complete")
+        await _send_complete(added, total, summary_text, fallback_tools)
+        logger.info(f"Fallback scan complete: +{added}, total={total}")
 
     except websockets.exceptions.ConnectionClosed:
         logger.info("Scan halted — client disconnected during send")

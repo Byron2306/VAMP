@@ -129,12 +129,45 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner").strip()
 DEEPSEEK_TIMEOUT_S = int(os.getenv("DEEPSEEK_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
+VAMP_REASONING_MODE = os.getenv("VAMP_REASONING_MODE", "high").strip().lower()
 
 # Optional Ollama-compatible overrides
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "").strip()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 OLLAMA_API_KEY_HEADER = os.getenv("OLLAMA_API_KEY_HEADER", "Authorization").strip() or "Authorization"
+
+
+def _normalised_reasoning_mode() -> Optional[str]:
+    mode = (VAMP_REASONING_MODE or "").strip().lower()
+    if mode in {"", "off", "none", "disable", "disabled", "0"}:
+        return None
+    if mode not in {"low", "medium", "high", "max"}:
+        return "high"
+    return mode
+
+
+def _is_ollama_endpoint(url: Optional[str]) -> bool:
+    if not url:
+        return False
+    lowered = url.strip().lower()
+    return any(token in lowered for token in ("/api/chat", "/api/generate", "ollama"))
+
+
+def _reasoning_directive(model: str, url: Optional[str] = None) -> Optional[Dict[str, str]]:
+    mode = _normalised_reasoning_mode()
+    if not mode:
+        return None
+    if _is_ollama_endpoint(url):
+        return None
+    model_name = (model or "").lower()
+    if not model_name:
+        return {"effort": mode}
+    # Prefer high-reasoning families but allow override for custom models
+    if any(keyword in model_name for keyword in ("reason", "gpt", "deepseek")):
+        return {"effort": mode}
+    # Unknown model families: still return directive but callers may ignore it gracefully
+    return {"effort": mode}
 
 # --------------------------------------------------------------------------------------
 # Utilities
@@ -290,6 +323,10 @@ def analyze_evidence_with_deepseek(item: Dict[str, Any], extras: Optional[Dict[s
         "response_format": {"type": "json_object"}
     }
 
+    reasoning = _reasoning_directive(DEEPSEEK_MODEL, DEEPSEEK_API_URL)
+    if reasoning:
+        payload["reasoning"] = reasoning
+
     try:
         resp = _http_post(DEEPSEEK_API_URL, _headers(), payload)
         data = _extract_json_content(resp)
@@ -413,6 +450,10 @@ def analyze_feedback_with_deepseek(
         "temperature": 0.2,
         "response_format": {"type": "json_object"}
     }
+
+    reasoning = _reasoning_directive(DEEPSEEK_MODEL, DEEPSEEK_API_URL)
+    if reasoning:
+        payload["reasoning"] = reasoning
 
     try:
         resp = _http_post(DEEPSEEK_API_URL, _headers(), payload)
@@ -558,6 +599,11 @@ def ask_deepseek(prompt: str) -> str:
             ],
             "temperature": 0.7,
         }
+
+    if not is_ollama:
+        reasoning = _reasoning_directive(model, url)
+        if reasoning:
+            payload["reasoning"] = reasoning
 
     try:
         response = requests.post(
