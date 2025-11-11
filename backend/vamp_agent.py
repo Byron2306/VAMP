@@ -1194,15 +1194,12 @@ async def scrape_outlook(
         body_text = ""
         if opened:
             try:
-                wait_for_body_script = (
-                    "() => {\n"
-                    "  const doc = document.querySelector('div[role=\\'document\\']') ||\n"
-                    "              document.querySelector('[aria-label*=\"Message body\"]');\n"
-                    "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
-                    "}\n"
-                )
                 await page.wait_for_function(
-                    wait_for_body_script,
+                    "() => {\n"
+                    "  const doc = document.querySelector('div[role=\\'document\\']') ||"
+                    "              document.querySelector('[aria-label*="Message body"]');\n"
+                    "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
+                    "}",
                     timeout=6000,
                 )
             except Exception:
