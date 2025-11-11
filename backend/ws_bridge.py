@@ -614,19 +614,76 @@ async def on_ask(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:
     messages = msg.get("messages", [])
     question = "\n\n".join(str(m.get("content", "")) for m in messages if isinstance(m, dict)).strip()
 
-    if not question:
-        await _safe_send(ws, ok("ASK", {"answer": "[VAMP AI] No question received."}), "ASK")
+    mode = str(msg.get("mode") or "").strip().lower() or "ask"
+    is_brain_scan = mode in {"brain_scan", "scan", "scan_via_brain"}
+
+    if is_brain_scan and not question:
+        await _safe_send(ws, fail("SCAN_ACTIVE", "No scan request provided"), "SCAN_ACTIVE")
+        await _safe_send(ws, ok("ASK", {"answer": "[VAMP AI] No question received.", "mode": mode, "tools": []}), "ASK")
         return
+
+    async def forward_progress(progress: float, status: str) -> None:
+        payload = {
+            "pct": float(progress),
+            "progress": max(0.0, min(1.0, float(progress) / 100.0)),
+            "status": status or "",
+        }
+        await _safe_send(ws, ok("SCAN_ACTIVE/PROGRESS", payload), "SCAN_ACTIVE/PROGRESS")
+
+    if not question:
+        await _safe_send(ws, ok("ASK", {"answer": "[VAMP AI] No question received.", "mode": mode, "tools": []}), "ASK")
+        return
+
+    if is_brain_scan:
+        await _safe_send(ws, ok("SCAN_ACTIVE/STARTED"), "SCAN_ACTIVE/STARTED")
 
     try:
-        orchestration = await _orchestrate_answer(msg, question)
+        orchestration = await _orchestrate_answer(
+            msg,
+            question,
+            progress_cb=forward_progress if is_brain_scan else None,
+            purpose="scan" if is_brain_scan else "ask",
+        )
     except Exception as exc:
         logger.warning(f"orchestration failed: {exc}")
+        if is_brain_scan:
+            await _safe_send(ws, fail("SCAN_ACTIVE", str(exc)), "SCAN_ACTIVE")
         fallback = f"[VAMP AI] (fallback) {question}"
-        await _safe_send(ws, ok("ASK", {"answer": fallback}), "ASK")
+        await _safe_send(ws, ok("ASK", {"answer": fallback, "mode": mode, "tools": []}), "ASK")
         return
 
-    await _safe_send(ws, ok("ASK", orchestration), "ASK")
+    payload = dict(orchestration or {})
+    payload.setdefault("tools", [])
+    payload["mode"] = mode
+
+    if is_brain_scan:
+        tools = [dict(t) for t in payload.get("tools", []) if isinstance(t, dict)]
+        added = 0
+        total = 0
+        for obs in tools:
+            tool_name = str(obs.get("tool") or "").lower()
+            if tool_name == "scan_active" and obs.get("status") == "success":
+                try:
+                    added = int(obs.get("items_found", 0) or 0)
+                except Exception:
+                    added = 0
+                try:
+                    total = int(obs.get("total_month_items", 0) or 0)
+                except Exception:
+                    total = 0
+
+        summary_text = str(payload.get("answer") or "").strip()
+        complete_payload: Dict[str, Any] = {
+            "added": added,
+            "total_evidence": total,
+        }
+        if summary_text:
+            complete_payload["brain_summary"] = summary_text
+        if tools:
+            complete_payload["tools"] = tools
+        await _safe_send(ws, ok("SCAN_ACTIVE/COMPLETE", complete_payload), "SCAN_ACTIVE/COMPLETE")
+
+    await _safe_send(ws, ok("ASK", payload), "ASK")
 
 
 async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> None:

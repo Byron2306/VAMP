@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
+from textwrap import dedent
 
 from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
 from email.utils import parsedate_to_datetime
@@ -1064,6 +1065,8 @@ async def scrape_outlook(
     else:
         logger.debug("Outlook fallback selector matched %d nodes", len(rows))
 
+    total_rows = len(rows) or 1
+
     for idx, row in enumerate(rows):
         if len(items) >= OUTLOOK_MAX_ROWS:
             break
@@ -1169,6 +1172,17 @@ async def scrape_outlook(
             sender = "(unknown sender)"
 
         ts = _parse_ts(ts_text) if ts_text else None
+
+        if on_progress:
+            try:
+                pct_window = 8.5
+                pct = 30.0 + (pct_window * ((idx + 1) / total_rows))
+                clipped = max(30.0, min(39.0, pct))
+                subject_label = subject[:64] if subject else "(no subject)"
+                await on_progress(clipped, f"Reading email {idx + 1}/{total_rows}: {subject_label}")
+            except Exception:
+                pass
+
         if ts and not _in_month(ts, month_bounds):
             continue
         if ts is None and ts_text:
@@ -1195,11 +1209,15 @@ async def scrape_outlook(
         if opened:
             try:
                 await page.wait_for_function(
-                    "() => {\n"
-                    "  const doc = document.querySelector('div[role=\\'document\\']') ||"
-                    "              document.querySelector('[aria-label*="Message body"]');\n"
-                    "  return doc && doc.innerText && doc.innerText.trim().length > 0;\n"
-                    "}",
+                    dedent(
+                        """
+                        () => {
+                            const doc = document.querySelector("div[role='document']")
+                                || document.querySelector("[aria-label*='Message body']");
+                            return doc && doc.innerText && doc.innerText.trim().length > 0;
+                        }
+                        """
+                    ),
                     timeout=6000,
                 )
             except Exception:
@@ -1228,6 +1246,19 @@ async def scrape_outlook(
 
         timestamp_value = ts.isoformat() if ts else _now_iso()
 
+        confidence = 0.95
+        relative_label = None
+        lowered_ts_text = ts_text.lower() if ts_text else ""
+        if ts_text:
+            if not any(ch.isdigit() for ch in ts_text):
+                confidence = 0.55
+                relative_label = ts_text
+            elif any(token in lowered_ts_text for token in ["yesterday", "today", "ago", "hour", "minute", "last "]):
+                confidence = 0.6
+                relative_label = ts_text
+        if ts is None:
+            confidence = min(confidence, 0.45)
+
         path_id = convo_id or f"{sender} - {subject}"
         item = {
             "source": "outlook",
@@ -1244,6 +1275,9 @@ async def scrape_outlook(
             item["aria_label"] = aria_label
         if preview:
             item["preview"] = preview
+        if relative_label:
+            item["timestamp_relative"] = relative_label
+        item["timestamp_confidence"] = round(confidence, 3)
         if body_text:
             item["body"] = body_text
         if ts is None:
