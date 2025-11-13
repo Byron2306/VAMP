@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import time
 from dataclasses import dataclass
@@ -56,30 +57,48 @@ from .nwu_brain.scoring import NWUScorer
 
 MANIFEST_PATH = BRAIN_DATA_DIR / "brain_manifest.json"
 
+_SYSTEM = platform.system().lower()
+
+
+def _default_browser_args() -> List[str]:
+    """Return Chromium launch arguments tailored to the current platform."""
+
+    base_args = [
+        "--disable-web-security",
+        "--disable-features=VizDisplayCompositor",
+        "--disable-blink-features=AutomationControlled",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-component-extensions-with-background-pages",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-plugins",
+        "--disable-translate",
+        "--mute-audio",
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    ]
+
+    linux_only = {"--disable-dev-shm-usage", "--no-sandbox", "--disable-setuid-sandbox"}
+
+    if _SYSTEM == "linux":
+        base_args.extend(sorted(linux_only))
+    else:
+        base_args = [arg for arg in base_args if arg not in linux_only]
+
+    if _SYSTEM == "darwin":
+        base_args.append("--use-mock-keychain")
+
+    return base_args
+
+
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
     "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
     "slow_mo": 0,
-    "args": [
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--disable-blink-features=AutomationControlled',
-        '--disable-dev-shm-usage',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        '--disable-component-extensions-with-background-pages',
-        '--disable-default-apps',
-        '--disable-extensions',
-        '--disable-plugins',
-        '--disable-translate',
-        '--mute-audio',
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-    ]
+    "args": _default_browser_args(),
 }
 
 OUTLOOK_MAX_ROWS = int(os.getenv("VAMP_OUTLOOK_MAX_ROWS", "500"))
@@ -124,6 +143,23 @@ SERVICE_URLS = {
     "drive": "https://drive.google.com/drive/my-drive",
     # Add for Nextcloud: "nextcloud": "https://your.nextcloud.instance/apps/files/"
 }
+
+SERVICE_LOGIN_READY = {
+    "outlook": [
+        "[data-test-id=\"message-list\"]",
+        "div[role=\"navigation\"][aria-label*='Mail']",
+    ],
+    "onedrive": [
+        "[data-automationid=\"TopBar\"]",
+        "[role=\"main\"] [data-automationid=\"Grid\"]",
+    ],
+    "drive": [
+        "[aria-label=\"My Drive\"]",
+        "[data-target=\"docos-DriveMain\"]",
+    ],
+}
+
+MANUAL_LOGIN_TIMEOUT = int(os.getenv("VAMP_MANUAL_LOGIN_TIMEOUT", "300"))  # seconds
 
 ALLOW_INTERACTIVE_LOGIN = os.getenv("VAMP_ALLOW_INTERACTIVE_LOGIN", "1").strip().lower() not in {"0", "false", "no"}
 
@@ -545,32 +581,47 @@ async def _prompt_manual_login(context: Any, service: str, state_path: Path, ide
         raise RuntimeError(f"Failed to load {url} for {service}: {exc}") from exc
 
     logger.info(
-        "Storage state for %s (%s) not found. A visible Chromium window has been opened for manual login.",
+        "Storage state for %s (%s) not found. A visible Chromium window has been opened for manual login."
+        " The agent will automatically capture credentials once the workspace is detected.",
         service,
         identity or "default",
     )
-    prompt = (
-        f"Complete the {service} sign-in flow for {identity or 'this account'} in the opened Chromium window.\n"
-        "Once your mailbox is visible, return to this terminal and press Enter to continue..."
-    )
 
-    try:
-        input(prompt)
-    except EOFError as exc:
-        raise RuntimeError(
-            "Interactive confirmation was not available while capturing the login session. "
-            "Run the VAMP backend from a terminal where keyboard input is permitted or pre-create "
-            f"the {service} storage_state file manually using Playwright's tooling."
-        ) from exc
+    selectors = SERVICE_LOGIN_READY.get(service, ["[role='main']", "body.authenticated"])
+    deadline = time.time() + MANUAL_LOGIN_TIMEOUT
+    last_ping = 0.0
 
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    await context.storage_state(path=str(state_path))
-    logger.info("Saved %s storage state to %s", service, state_path)
+    while time.time() < deadline:
+        for selector in selectors:
+            try:
+                await page.wait_for_selector(selector, timeout=2000)
+            except PWTimeout:
+                continue
+            else:
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                await context.storage_state(path=str(state_path))
+                logger.info("Detected %s workspace; saved storage state to %s", service, state_path)
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+                return
+
+        if time.time() - last_ping > 30:
+            logger.info("Waiting for %s login to complete...", service)
+            last_ping = time.time()
+
+        await page.wait_for_timeout(1000)
 
     try:
         await page.close()
     except Exception:
         pass
+
+    raise RuntimeError(
+        f"Manual login for {service} did not complete within {MANUAL_LOGIN_TIMEOUT} seconds. "
+        "Ensure the credentials are valid or supply them via the Auth Manager API for automated login."
+    )
 
 
 async def _ensure_storage_state(service: Optional[str], state_path: Optional[Path], identity: Optional[str]) -> None:

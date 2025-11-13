@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -17,8 +18,11 @@ except Exception:  # pragma: no cover - fallback for environments without crypto
 
 from . import AGENT_STATE_DIR
 
+logger = logging.getLogger(__name__)
+
 VAULT_FILE = AGENT_STATE_DIR / "secrets.json"
 KEY_FILE = AGENT_STATE_DIR / "secrets.key"
+ALLOW_INSECURE_VAULT = os.getenv("VAMP_ALLOW_INSECURE_VAULT", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -55,6 +59,16 @@ class SecretsVault:
     """Simple encrypted vault that never leaks secrets to the environment."""
 
     def __init__(self, path: Path = VAULT_FILE, key_path: Path = KEY_FILE) -> None:
+        if Fernet is None and not ALLOW_INSECURE_VAULT:
+            raise RuntimeError(
+                "The 'cryptography' package is required for encrypted secret storage. "
+                "Install cryptography to continue or set VAMP_ALLOW_INSECURE_VAULT=1 to permit plaintext storage explicitly."
+            )
+        if Fernet is None and ALLOW_INSECURE_VAULT:
+            logger.warning(
+                "cryptography not available; secrets will be stored in plaintext because VAMP_ALLOW_INSECURE_VAULT=1."
+            )
+
         self.path = path
         self.key_path = key_path
         self._fernet: Optional[Fernet] = self._ensure_key()
