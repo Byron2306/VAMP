@@ -49,8 +49,7 @@
   };
 
   // ---------- State Management ----------
-  let ws = null;
-  let wsUrlCurrent = 'ws://127.0.0.1:8080';
+  let wsUrlCurrent = 'http://127.0.0.1:8080';
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let isBusy = false;
@@ -58,6 +57,7 @@
   let lastPct = 0;
   let heartbeatTimer = null;
   let scanTimeout = null;
+  let socketHandlersRegistered = false;
   
   // Evidence state
   let currentEvidence = [];
@@ -659,31 +659,16 @@
     }, reconnectDelayMs);
   }
 
-  function connectWS(url) {
-    if (ws) {
-      try { ws.onopen = ws.onclose = ws.onmessage = ws.onerror = null; ws.close(); } catch {}
-      ws = null;
-    }
-    clearTimeout(reconnectTimer);
-
-    wsUrlCurrent = url || wsUrlCurrent;
-    setStatus('Connecting...', 'scanning');
-
-    try {
-      SocketIOManager.connect(wsUrlCurrent);
-    } catch (e) {
-      setStatus('Connection Failed', 'error');
-      logAnswer(`Connection error: ${e.message}`, 'error');
-      scheduleReconnect();
-      return;
-    }
+  function ensureSocketHandlers() {
+    if (socketHandlersRegistered) return;
+    socketHandlersRegistered = true;
 
     SocketIOManager.on('connect', () => {
       setStatus('Connected', 'connected');
       reconnectDelayMs = 1000;
       enableControls(true);
       logAnswer('WebSocket connected successfully', 'success');
-      
+
       try {
         chrome.storage?.local?.get(['vamp_settings'], (res) => {
           const s = res?.vamp_settings || {};
@@ -691,30 +676,49 @@
           chrome.storage?.local?.set({ vamp_settings: s });
         });
       } catch {}
-    };
+    });
 
-    SocketIOManager.on('message', (ev) => handleMessage(ev.data);
+    SocketIOManager.on('message', (ev) => handleMessage(ev.data));
 
-    SocketIOManager.on('error', (error) => {
+    SocketIOManager.on('error', () => {
       setStatus('Connection Error', 'error');
       logAnswer('WebSocket connection error', 'error');
-    };
+    });
 
     SocketIOManager.on('disconnect', (event) => {
       setStatus('Disconnected', 'disconnected');
-      if (event.code !== 1000) {
-        logAnswer(`Connection closed: ${event.reason || 'Unknown reason'}`, 'error');
+      if (event?.code !== 1000) {
+        logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
       }
       if (!document.hidden) scheduleReconnect();
-    };
+    });
+  }
+
+  function connectWS(url) {
+    clearTimeout(reconnectTimer);
+    wsUrlCurrent = url || wsUrlCurrent;
+    setStatus('Connecting...', 'scanning');
+    ensureSocketHandlers();
+
+    try {
+      SocketIOManager.disconnect();
+    } catch (err) {
+      console.warn('[SocketIO] Disconnect failed', err);
+    }
+
+    SocketIOManager.connect(wsUrlCurrent).catch((e) => {
+      setStatus('Connection Failed', 'error');
+      logAnswer(`Connection error: ${e?.message || e}`, 'error');
+      scheduleReconnect();
+    });
   }
 
   function sendWS(obj) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
+    if (!SocketIOManager.isConnected()) {
       logAnswer('Not connected - reconnecting...', 'warning');
       connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
       setTimeout(() => {
-        if (ws && ws.readyState === WebSocket.OPEN) {
+        if (SocketIOManager.isConnected()) {
           SocketIOManager.send(obj);
           logAnswer('Command sent after reconnect', 'success');
         } else {
@@ -723,7 +727,7 @@
       }, 500);
       return;
     }
-    
+
     try {
       SocketIOManager.send(obj);
     } catch (e) {
@@ -1282,7 +1286,7 @@
 
     // Initial evidence load
     setTimeout(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (SocketIOManager.isConnected()) {
         refreshEvidenceDisplay();
       }
     }, 1000);
@@ -1292,12 +1296,7 @@
     stopHeartbeat();
     clearTimeout(reconnectTimer);
     clearTimeout(scanTimeout);
-    if (ws) { 
-      try { 
-        ws.close(1000, 'Popup closing'); 
-      } catch {} 
-      ws = null; 
-    }
+    SocketIOManager.disconnect();
   });
 })();
 

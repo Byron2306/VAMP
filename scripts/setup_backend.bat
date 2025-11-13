@@ -16,10 +16,10 @@ if not defined VAMP_ONEDRIVE_PASSWORD set "VAMP_ONEDRIVE_PASSWORD=Byron230686!"
 if not defined VAMP_GOOGLE_USERNAME set "VAMP_GOOGLE_USERNAME=20172672@g.nwu.ac.za"
 if not defined VAMP_GOOGLE_PASSWORD set "VAMP_GOOGLE_PASSWORD=Byron230686!"
 
-REM Ollama / DeepSeek proxy configuration for gpt-oss:120b-cloud model
-if not defined DEEPSEEK_API_URL set "DEEPSEEK_API_URL=http://127.0.0.1:11434/v1/chat/completions"
-if not defined DEEPSEEK_MODEL set "DEEPSEEK_MODEL=gpt-oss:120b-cloud"
-if not defined DEEPSEEK_API_KEY set "DEEPSEEK_API_KEY=local"
+REM Ollama cloud configuration for gpt-oss:120-b model
+if not defined OLLAMA_API_URL set "OLLAMA_API_URL=https://cloud.ollama.ai/v1/chat/completions"
+if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120-b"
+if not defined OLLAMA_API_KEY set "OLLAMA_API_KEY=local"
 
 REM ---------------------------------------------------------------------------
 REM Verify Python availability
