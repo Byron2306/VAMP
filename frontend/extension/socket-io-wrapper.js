@@ -44,7 +44,10 @@ function ensureSocketIOLoaded() {
     }
 
     const script = document.createElement('script');
-    script.src = 'https://cdn.socket.io/4.5.4/socket.io.min.js';
+    const socketIoUrl = (typeof chrome !== 'undefined' && chrome.runtime?.getURL)
+      ? chrome.runtime.getURL('vendor/socket.io.min.js')
+      : 'vendor/socket.io.min.js';
+    script.src = socketIoUrl;
     script.async = true;
     script.dataset.socketIo = 'client';
     script.onload = () => {
