@@ -9,3 +9,4 @@ pytesseract
 cryptography
 python-dotenv
 flask-socketio
+pytest
