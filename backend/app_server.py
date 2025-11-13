@@ -4,10 +4,11 @@ import logging
 import os
 from pathlib import Path
 from typing import Any
-from flask import Flask, send_from_directory
+from flask import Flask, request, send_from_directory
 from flask_socketio import SocketIO
 from .agent_app.api import api
 from .agent_app.app_state import agent_state
+from .agent_app.ws_dispatcher import WSActionDispatcher
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ def create_app() -> tuple:
     
     # Register API blueprint
     app.register_blueprint(api)
+
+    dispatcher = WSActionDispatcher(socketio)
     
     # Serve static dashboard files
     @app.get("/")
@@ -54,43 +57,19 @@ def create_app() -> tuple:
         keeps the handler side-effect free so the handshake can succeed.
         """
 
-        logger.info("Client connected")
+        logger.info("Client connected: sid=%s", request.sid)
     
     @socketio.on('disconnect')
     def handle_disconnect() -> None:
-        logger.info("Client disconnected")
-    
-    def sanitize_message_payload(payload: Any) -> dict[str, Any]:
-        """Return a safe response object for websocket payloads.
-
-        The desktop extension expects a ``response`` event for every
-        ``message`` emission. Historically the server simply echoed the
-        payload which meant potentially sensitive instructions (for example
-        connector execution requests) were reflected back to *all* connected
-        clients. To avoid accidentally propagating privileged instructions we
-        only allow-list simple state queries and redact everything else.
-        """
-
-        if not isinstance(payload, dict):
-            logger.warning("Rejecting non-dict websocket payload: %r", payload)
-            return {"error": "invalid_payload"}
-
-        action = payload.get("action")
-        if action == "GET_STATE":
-            return {"data": payload}
-
-        logger.warning(
-            "Rejecting unsupported websocket action %r with keys %s",
-            action,
-            sorted(payload.keys()),
-        )
-        return {"error": "unsupported_action", "action": action}
+        sid = request.sid
+        logger.info("Client disconnected: sid=%s", sid)
+        dispatcher.forget_session(sid)
 
     @socketio.on('message')
     def handle_message(data: Any) -> None:
-        logger.info("Received message: %s", data)
-        response = sanitize_message_payload(data)
-        socketio.emit('response', response)
+        sid = request.sid
+        logger.info("Received message from %s: %s", sid, data)
+        dispatcher.dispatch(sid, data)
     
     return app, socketio
 

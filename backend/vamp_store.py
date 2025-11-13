@@ -425,7 +425,7 @@ class VampStore:
     # Year document (for GET_STATE)
     # ------------------------------------------------------------------
     def get_year_doc(self, email: str, year: int) -> Dict[str, Any]:
-        """Return a full year document as expected by the UI."""
+        """Return lightweight year metadata for dashboards."""
         year_dir = self.get_year_dir(email, year)
         if not year_dir.is_dir():
             return {"year": year, "months": {}}
@@ -445,6 +445,39 @@ class VampStore:
             }
 
         return {"year": year, "months": months}
+
+    def get_year_doc_with_items(self, email: str, year: int) -> Dict[str, Any]:
+        """Return a year document that includes month-level evidence items."""
+
+        base = self.get_year_doc(email, year)
+        months: Dict[str, Any] = {}
+        total_items = 0
+
+        for month_key, meta in base.get("months", {}).items():
+            try:
+                month_int = int(month_key)
+            except (TypeError, ValueError):
+                continue
+
+            month_doc = self._load_json(self.get_month_path(email, year, month_int))
+            if not month_doc:
+                month_doc = {}
+
+            items = list(month_doc.get("items", []))
+
+            meta_with_items = dict(meta)
+            locked_flag = month_doc.get("locked")
+            if locked_flag is None:
+                locked_flag = meta.get("locked", False)
+            meta_with_items["locked"] = bool(locked_flag)
+            meta_with_items["updated_at"] = month_doc.get("updated_at") or meta.get("updated_at")
+            meta_with_items["locked_at"] = month_doc.get("locked_at") or meta.get("locked_at")
+            meta_with_items["items"] = items
+
+            total_items += len(items)
+            months[month_key] = meta_with_items
+
+        return {"year": year, "months": months, "total_items": total_items}
 
 
 # ----------------------------------------------------------------------
