@@ -46,11 +46,11 @@ logging.basicConfig(
 logger = logging.getLogger("vamp.ws")
 
 try:
-    from .deepseek_client import ask_deepseek, analyze_feedback_with_deepseek
+    from .ollama_client import ask_ollama, analyze_feedback_with_ollama
 except Exception as e:
-    logger.warning(f"DeepSeek client not available: {e}")
-    ask_deepseek = None  # type: ignore
-    analyze_feedback_with_deepseek = None  # type: ignore
+    logger.warning(f"Ollama client not available: {e}")
+    ask_ollama = None  # type: ignore
+    analyze_feedback_with_ollama = None  # type: ignore
 
 
 def _supports_structured_feedback(func: Optional[Any]) -> bool:
@@ -61,7 +61,7 @@ def _supports_structured_feedback(func: Optional[Any]) -> bool:
         return False
 
 
-HAS_STRUCTURED_FEEDBACK = _supports_structured_feedback(analyze_feedback_with_deepseek)
+HAS_STRUCTURED_FEEDBACK = _supports_structured_feedback(analyze_feedback_with_ollama)
 
 # --- LLM Orchestration helpers ---
 _ACTION_BLOCK = re.compile(r"```(?:tool|action)\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
@@ -231,7 +231,7 @@ async def _orchestrate_answer(
 ) -> Dict[str, Any]:
     """Drive an LLM loop that can invoke connectors before producing an answer."""
 
-    if not ask_deepseek:
+    if not ask_ollama:
         return {"answer": f"[VAMP AI] Received: {question}", "tools": []}
 
     uid = _uid_from(msg)
@@ -337,7 +337,7 @@ async def _orchestrate_answer(
         prompt = "\n\n".join(part for part in prompt_parts if part)
 
         try:
-            response = await loop.run_in_executor(None, partial(ask_deepseek, prompt))
+            response = await loop.run_in_executor(None, partial(ask_ollama, prompt))
         except Exception as exc:
             return {
                 "answer": f"[VAMP AI] (error) {exc}",
@@ -511,7 +511,7 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
     orchestrated: Optional[Dict[str, Any]] = None
 
     try:
-        if ask_deepseek:
+        if ask_ollama:
             brain_msg = dict(msg)
             brain_msg.setdefault("email", email or uid)
             brain_msg.setdefault("year", year)
@@ -693,12 +693,12 @@ async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
     answer = "[VAMP Assessor] No feedback request received."
 
     if question:
-        if analyze_feedback_with_deepseek and HAS_STRUCTURED_FEEDBACK:
+        if analyze_feedback_with_ollama and HAS_STRUCTURED_FEEDBACK:
             loop = asyncio.get_running_loop()
 
             def _call_feedback() -> str:
                 try:
-                    result = analyze_feedback_with_deepseek([], [question])  # type: ignore[arg-type]
+                    result = analyze_feedback_with_ollama([], [question])  # type: ignore[arg-type]
                 except Exception as exc:
                     raise exc
 
@@ -715,14 +715,14 @@ async def on_ask_feedback(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> N
             try:
                 answer = await loop.run_in_executor(None, _call_feedback)
             except Exception as e:
-                logger.warning(f"analyze_feedback_with_deepseek failed: {e}")
+                logger.warning(f"analyze_feedback_with_ollama failed: {e}")
                 answer = f"[VAMP Assessor] (fallback) {question}"
-        elif ask_deepseek:
+        elif ask_ollama:
             loop = asyncio.get_running_loop()
             try:
-                answer = await loop.run_in_executor(None, partial(ask_deepseek, question))
+                answer = await loop.run_in_executor(None, partial(ask_ollama, question))
             except Exception as e:
-                logger.warning(f"ask_deepseek feedback fallback failed: {e}")
+                logger.warning(f"ask_ollama feedback fallback failed: {e}")
                 answer = f"[VAMP Assessor] (fallback) {question}"
         else:
             answer = f"[VAMP Assessor] Received: {question}"

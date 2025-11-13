@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-deepseek_client.py — Strict NWU Brain–aligned AI gateway for VAMP
+ollama_client.py — Strict NWU Brain–aligned AI gateway for VAMP
 
 This module provides two high-level helpers that call an OpenAI/Ollama-
-compatible chat completions endpoint (e.g., DeepSeek, local gateway):
+compatible chat completions endpoint (e.g., Ollama, local gateway):
 
-  • analyze_evidence_with_deepseek(item, extras=None)
-  • analyze_feedback_with_deepseek(items, questions, rubric=None, extras=None)
+  • analyze_evidence_with_ollama(item, extras=None)
+  • analyze_feedback_with_ollama(items, questions, rubric=None, extras=None)
 
 Key NWU Brain integrations (no stubs, no truncation):
 -----------------------------------------------------
@@ -26,10 +26,10 @@ Key NWU Brain integrations (no stubs, no truncation):
      functions fall back gracefully with a safe default object.
 
 4) Configuration via environment:
-   DEEPSEEK_API_URL    (default: https://api.deepseek.com/v1/chat/completions)
-   DEEPSEEK_API_KEY    (required for hosted APIs; optional for local gateways)
-   DEEPSEEK_MODEL      (e.g., deepseek-reasoner, deepseek-chat; default: deepseek-reasoner)
-   DEEPSEEK_TIMEOUT_S  (HTTP timeout; default: 120)
+   OLLAMA_API_URL    (default: https://cloud.ollama.ai/v1/chat/completions)
+   OLLAMA_API_KEY    (required for hosted APIs; optional for local gateways)
+   OLLAMA_MODEL      (default: gpt-oss:120-b)
+   OLLAMA_TIMEOUT_S  (HTTP timeout; default: 120)
    VAMP_BUNDLE_LIMIT   (max items to include in feedback bundle; default: 60)
 
 Dependencies:
@@ -46,8 +46,9 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-import urllib.request
+import requests
 import urllib.error
+import urllib.request
 
 # --------------------------------------------------------------------------------------
 # Paths & bootstrap
@@ -124,17 +125,12 @@ SYSTEM_PROMPT = _brain_corpus()
 # HTTP configuration
 # --------------------------------------------------------------------------------------
 
-DEEPSEEK_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.deepseek.com/v1/chat/completions").strip()
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-reasoner").strip()
-DEEPSEEK_TIMEOUT_S = int(os.getenv("DEEPSEEK_TIMEOUT_S", "120").strip() or "120")
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://cloud.ollama.ai/v1/chat/completions").strip()
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120-b").strip()
+OLLAMA_TIMEOUT_S = int(os.getenv("OLLAMA_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
 VAMP_REASONING_MODE = os.getenv("VAMP_REASONING_MODE", "high").strip().lower()
-
-# Optional Ollama-compatible overrides
-OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "").strip()
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "").strip()
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 OLLAMA_API_KEY_HEADER = os.getenv("OLLAMA_API_KEY_HEADER", "Authorization").strip() or "Authorization"
 
 
@@ -164,7 +160,7 @@ def _reasoning_directive(model: str, url: Optional[str] = None) -> Optional[Dict
     if not model_name:
         return {"effort": mode}
     # Prefer high-reasoning families but allow override for custom models
-    if any(keyword in model_name for keyword in ("reason", "gpt", "deepseek")):
+    if any(keyword in model_name for keyword in ("reason", "gpt", "ollama")):
         return {"effort": mode}
     # Unknown model families: still return directive but callers may ignore it gracefully
     return {"effort": mode}
@@ -177,7 +173,7 @@ def _http_post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Di
     """Minimal JSON POST."""
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=DEEPSEEK_TIMEOUT_S) as resp:
+    with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_S) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
         try:
             return json.loads(raw)
@@ -189,8 +185,8 @@ def _http_post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Di
 def _headers() -> Dict[str, str]:
     hdrs = {"Content-Type": "application/json"}
     # API key is optional for some local gateways (e.g., no-auth reverse proxy)
-    if DEEPSEEK_API_KEY:
-        hdrs["Authorization"] = f"Bearer {DEEPSEEK_API_KEY}"
+    if OLLAMA_API_KEY:
+        hdrs["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
     return hdrs
 
 
@@ -271,7 +267,7 @@ def _extract_json_content(resp: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 # Public API
 # --------------------------------------------------------------------------------------
 
-def analyze_evidence_with_deepseek(item: Dict[str, Any], extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def analyze_evidence_with_ollama(item: Dict[str, Any], extras: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Analyze a single artefact strictly against NWU Brain rules.
 
@@ -289,7 +285,7 @@ def analyze_evidence_with_deepseek(item: Dict[str, Any], extras: Optional[Dict[s
           "actions": [str]
         }
     """
-    if not DEEPSEEK_API_URL:
+    if not OLLAMA_API_URL:
         return {
             "summary": "(AI endpoint not configured)",
             "verdict": "Review",
@@ -316,19 +312,19 @@ def analyze_evidence_with_deepseek(item: Dict[str, Any], extras: Optional[Dict[s
     }
 
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": OLLAMA_MODEL,
         "messages": _build_messages(SYSTEM_PROMPT, user_payload),
         "temperature": 0.2,
         # Many APIs ignore this, but include if supported
         "response_format": {"type": "json_object"}
     }
 
-    reasoning = _reasoning_directive(DEEPSEEK_MODEL, DEEPSEEK_API_URL)
+    reasoning = _reasoning_directive(OLLAMA_MODEL, OLLAMA_API_URL)
     if reasoning:
         payload["reasoning"] = reasoning
 
     try:
-        resp = _http_post(DEEPSEEK_API_URL, _headers(), payload)
+        resp = _http_post(OLLAMA_API_URL, _headers(), payload)
         data = _extract_json_content(resp)
         if data is None:
             # If the provider ignored `response_format`, attempt a lenient fallback
@@ -370,7 +366,7 @@ def analyze_evidence_with_deepseek(item: Dict[str, Any], extras: Optional[Dict[s
         }
 
 
-def analyze_feedback_with_deepseek(
+def analyze_feedback_with_ollama(
     items: List[Dict[str, Any]],
     questions: List[str],
     rubric: Optional[Dict[str, Any]] = None,
@@ -404,7 +400,7 @@ def analyze_feedback_with_deepseek(
           "notes": str
         }
     """
-    if not DEEPSEEK_API_URL:
+    if not OLLAMA_API_URL:
         return {
             "answers": [{
                 "question": q,
@@ -445,18 +441,18 @@ def analyze_feedback_with_deepseek(
     }
 
     payload = {
-        "model": DEEPSEEK_MODEL,
+        "model": OLLAMA_MODEL,
         "messages": _build_messages(SYSTEM_PROMPT, user_payload, mode_preset=mode_preset),
         "temperature": 0.2,
         "response_format": {"type": "json_object"}
     }
 
-    reasoning = _reasoning_directive(DEEPSEEK_MODEL, DEEPSEEK_API_URL)
+    reasoning = _reasoning_directive(OLLAMA_MODEL, OLLAMA_API_URL)
     if reasoning:
         payload["reasoning"] = reasoning
 
     try:
-        resp = _http_post(DEEPSEEK_API_URL, _headers(), payload)
+        resp = _http_post(OLLAMA_API_URL, _headers(), payload)
         data = _extract_json_content(resp)
         if data is None:
             # Non-JSON content fallback
@@ -519,17 +515,14 @@ def analyze_feedback_with_deepseek(
         }
 
 
-import os
-import requests
-
-
 def _requests_headers(is_ollama: bool = False) -> Dict[str, str]:
     """Mirror _headers() but for requests-based helpers."""
     headers = {"Content-Type": "application/json"}
 
-    api_key = os.environ.get("DEEPSEEK_API_KEY", DEEPSEEK_API_KEY).strip()
+    env_api_key = os.environ.get("OLLAMA_API_KEY")
+    api_key = (env_api_key or OLLAMA_API_KEY).strip()
     if is_ollama:
-        api_key = os.environ.get("OLLAMA_API_KEY", OLLAMA_API_KEY).strip() or api_key
+        api_key = (env_api_key or api_key).strip()
 
     if api_key:
         header_name = OLLAMA_API_KEY_HEADER if is_ollama else "Authorization"
@@ -551,9 +544,9 @@ def _format_prompt_with_system(user_prompt: str) -> str:
     return f"{SYSTEM_PROMPT}\n\nUser:\n{user_prompt}\n\nVAMP:".strip()
 
 
-def ask_deepseek(prompt: str) -> str:
+def ask_ollama(prompt: str) -> str:
     """
-    Lightweight helper for single-turn prompts against a DeepSeek-compatible endpoint.
+    Lightweight helper for single-turn prompts against a Ollama-compatible endpoint.
 
     Unlike the higher-level helpers above this function is frequently used in scripts
     and tooling, so we keep a very small surface area while still mirroring the
@@ -561,9 +554,10 @@ def ask_deepseek(prompt: str) -> str:
     the module.
     """
 
-    env_url = os.environ.get("DEEPSEEK_API_URL") or os.environ.get("OLLAMA_API_URL")
-    url = (env_url or DEEPSEEK_API_URL).strip()
-    model = (os.environ.get("DEEPSEEK_MODEL") or os.environ.get("OLLAMA_MODEL") or DEEPSEEK_MODEL or "deepseek-reasoner").strip()
+    env_url = os.environ.get("OLLAMA_API_URL")
+    url = (env_url or OLLAMA_API_URL).strip()
+    env_model = os.environ.get("OLLAMA_MODEL")
+    model = (env_model or OLLAMA_MODEL or "gpt-oss:120-b").strip()
 
     if not url:
         return "(AI endpoint not configured)"
@@ -577,13 +571,13 @@ def ask_deepseek(prompt: str) -> str:
 
     if is_ollama_generate:
         payload = {
-            "model": model or "gpt-oss:120b",
+            "model": model or "gpt-oss:120-b",
             "prompt": _format_prompt_with_system(user_message),
             "stream": False,
         }
     elif is_ollama_chat:
         payload = {
-            "model": model or "gpt-oss:120b",
+            "model": model or "gpt-oss:120-b",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -592,7 +586,7 @@ def ask_deepseek(prompt: str) -> str:
         }
     else:
         payload = {
-            "model": model or "deepseek-reasoner",
+            "model": model or "gpt-oss:120-b",
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -610,7 +604,7 @@ def ask_deepseek(prompt: str) -> str:
             url,
             json=payload,
             headers=_requests_headers(is_ollama=is_ollama),
-            timeout=DEEPSEEK_TIMEOUT_S,
+            timeout=OLLAMA_TIMEOUT_S,
         )
     except requests.RequestException as exc:
         return f"(AI error) {exc}"
@@ -657,7 +651,3 @@ def ask_deepseek(prompt: str) -> str:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
         return "(AI error) Unexpected response format"
-
-
-def analyze_feedback_with_deepseek(prompt):
-    return ask_deepseek(prompt)

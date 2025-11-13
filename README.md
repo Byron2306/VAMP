@@ -44,7 +44,7 @@ VAMP/
 │   ├── platform_plugins/      # Built-in connector implementations
 │   ├── nwu_brain/             # NWU scorer implementation
 │   ├── app_server.py
-│   ├── deepseek_client.py
+│   ├── ollama_client.py
 │   ├── vamp_agent.py
 │   ├── vamp_master.py
 │   ├── vamp_runner.py
@@ -68,7 +68,7 @@ VAMP/
 - 💾 Secrets vaulted at rest, plus durable browser storage states (no leaked env vars)
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
-- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every DeepSeek/Ollama prompt
+- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every Ollama gpt-oss:120-b prompt
 - 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular plugin design: connectors can be enabled/disabled or reconfigured live from the agent dashboard
 - 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
@@ -115,16 +115,12 @@ Open `frontend/dashboard/index.html` in a modern browser to view health metrics,
 ### 3. 🧬 Set Environment Variables
 
 ```powershell
-$env:DEEPSEEK_API_URL = "http://127.0.0.1:11434/v1/chat/completions"
-$env:DEEPSEEK_MODEL   = "gpt-oss:120b-cloud"
-
-# Optional Ollama cloud overrides
-$env:OLLAMA_API_URL   = "https://api.ollama.cloud/api/chat"
-$env:OLLAMA_MODEL     = "gpt-oss:120b"
-$env:OLLAMA_API_KEY   = "<token>"
+$env:OLLAMA_API_URL = "https://cloud.ollama.ai/v1/chat/completions"
+$env:OLLAMA_MODEL   = "gpt-oss:120-b"
+$env:OLLAMA_API_KEY = "<token>"
 ```
 
-> `deepseek_client.py` will automatically detect Ollama-style endpoints (`/api/chat` or `/api/generate`) and adjust the payload/headers. If you only set the Ollama variables, the DeepSeek defaults are ignored.
+> `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. If you are using a local Ollama gateway, set `OLLAMA_API_URL=http://127.0.0.1:11434/api/chat` instead.
 
 ### Agent-managed login and credential rotation
 
@@ -192,7 +188,7 @@ The bridge now relies on the agent server for configuration and authentication. 
 |--------------------------------------|---------------------------------------------|
 | `backend/vamp_agent.py`              | Core scraping + Playwright automation       |
 | `backend/ws_bridge.py`               | WebSocket bridge to frontend                |
-| `backend/deepseek_client.py`         | Client to LLM API via Ollama                |
+| `backend/ollama_client.py`           | Client to Ollama gpt-oss:120-b API          |
 | `backend/nwu_brain/scoring.py`       | Loads NWU brain manifest + scoring logic    |
 | `backend/data/nwu_brain/*.json`      | Manifest, policy registry, routing rules    |
 | `backend/data/states/`               | Chrome storage states (generated at runtime)|
@@ -254,5 +250,5 @@ Internal use only – NWU Research and Policy Development.
 Built with ❤️ using:
 - Microsoft Playwright
 - Python 3.10
-- Ollama LLM (DeepSeek-V2)
+- Ollama LLM (gpt-oss:120-b cloud)
 - NWU’s brain.json and scoring logic
