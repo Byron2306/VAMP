@@ -44,17 +44,53 @@ def create_app() -> tuple:
     # WebSocket connection handler
     @socketio.on('connect')
     def handle_connect() -> None:
+        """Log socket connections without attempting to send a response.
+
+        Returning data from a ``connect`` handler causes Werkzeug to raise
+        ``AssertionError: write() before start_response`` when the WebSocket
+        handshake upgrades from HTTP. The handshake expects either ``None`` or
+        ``False`` (to reject the connection); any other value results in the
+        WSGI stack trying to write a body before the upgrade completes. This
+        keeps the handler side-effect free so the handshake can succeed.
+        """
+
         logger.info("Client connected")
-        return {"status": "connected"}
     
     @socketio.on('disconnect')
     def handle_disconnect() -> None:
         logger.info("Client disconnected")
     
+    def sanitize_message_payload(payload: Any) -> dict[str, Any]:
+        """Return a safe response object for websocket payloads.
+
+        The desktop extension expects a ``response`` event for every
+        ``message`` emission. Historically the server simply echoed the
+        payload which meant potentially sensitive instructions (for example
+        connector execution requests) were reflected back to *all* connected
+        clients. To avoid accidentally propagating privileged instructions we
+        only allow-list simple state queries and redact everything else.
+        """
+
+        if not isinstance(payload, dict):
+            logger.warning("Rejecting non-dict websocket payload: %r", payload)
+            return {"error": "invalid_payload"}
+
+        action = payload.get("action")
+        if action == "GET_STATE":
+            return {"data": payload}
+
+        logger.warning(
+            "Rejecting unsupported websocket action %r with keys %s",
+            action,
+            sorted(payload.keys()),
+        )
+        return {"error": "unsupported_action", "action": action}
+
     @socketio.on('message')
     def handle_message(data: Any) -> None:
-        logger.info(f"Received message: {data}")
-        socketio.emit('response', {'data': data})
+        logger.info("Received message: %s", data)
+        response = sanitize_message_payload(data)
+        socketio.emit('response', response)
     
     return app, socketio
 
