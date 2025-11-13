@@ -12,7 +12,7 @@ pushd %~dp0\..
 
 echo.
 echo ============================================================
-echo   VAMP - Complete Setup with Ollama Cloud Integration
+echo   VAMP - Complete Setup with VAMP Cloud Integration
 echo ============================================================
 echo.
 
@@ -21,14 +21,15 @@ REM Configuration: update these values to match your accounts if needed.
 REM You can also pre-set these variables before running the script to
 REM override the defaults below.
 REM ----------------------------------------------------------------------
-if not defined OLLAMA_API_URL set "OLLAMA_API_URL=https://cloud.ollama.ai/v1/chat/completions"
-if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120-b"
-if not defined OLLAMA_API_KEY set "OLLAMA_API_KEY=local"
+if not defined VAMP_CLOUD_API_URL set "VAMP_CLOUD_API_URL=https://cloud.ollama.ai/v1/chat/completions"
+if not defined VAMP_MODEL set "VAMP_MODEL=gpt-oss:120-b"
+if not defined VAMP_API_KEY set "VAMP_API_KEY=d444f50476e4441f9c09264c1613b4b6.NRm41XBwlEv-1aM7OOwwfMsT"
+if not defined VAMP_DEVICE_KEY set "VAMP_DEVICE_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINiiSC7VfKvBo761Lf5Qfa8/4kYraTVyJWgELAAAmo+D"
 
-REM Optional DeepSeek fallback (mirrors local script shared by stakeholders)
-if not defined DEEPSEEK_API_URL set "DEEPSEEK_API_URL=https://cloud.ollama.ai/v1/chat/completions"
-if not defined DEEPSEEK_API_KEY set "DEEPSEEK_API_KEY=local"
-if not defined DEEPSEEK_MODEL set "DEEPSEEK_MODEL=gpt-oss:120-b"
+REM Backwards compatibility: populate legacy Ollama variables for the Python backend
+set "OLLAMA_API_URL=%VAMP_CLOUD_API_URL%"
+set "OLLAMA_MODEL=%VAMP_MODEL%"
+set "OLLAMA_API_KEY=%VAMP_API_KEY%"
 
 REM Account Credentials (defaults can be overridden through environment)
 if not defined VAMP_OUTLOOK_USERNAME set "VAMP_OUTLOOK_USERNAME=byron.bunt@nwu.ac.za"
@@ -75,7 +76,7 @@ echo [5/5] Launching VAMP unified agent server
 echo ============================================================
 echo   REST API: http://localhost:8080/api/*
 echo   WebSocket: ws://localhost:8080
-echo   Ollama Model: %OLLAMA_MODEL% @ %OLLAMA_API_URL%
+echo   VAMP Cloud Model: %VAMP_MODEL% @ %VAMP_CLOUD_API_URL%
 echo ============================================================
 echo.
 python -m backend.app_server
