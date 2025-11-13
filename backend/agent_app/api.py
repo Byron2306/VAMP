@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Dict
+from typing import Any, Callable, Dict, Iterator
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -187,30 +189,57 @@ def update_apply() -> Dict[str, object]:
 def update_rollback() -> Dict[str, object]:
     return agent_state().rollback()
 
+@contextmanager
+def _new_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
+    """Provide a fresh asyncio event loop for synchronous routes."""
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        yield loop
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
 @api.route("/scan/active", methods=["POST"])
 @json_response
 def scan_active() -> Dict[str, object]:
     """Trigger an active scan on a platform."""
-    state = agent_state()
+
     payload = request.get_json(force=True, silent=True) or {}
-    
-    email = str(payload.get("email", ""))
-    url = str(payload.get("url", ""))
-    year = int(payload.get("year", 2025))
-    month = int(payload.get("month", 1))
-    
-    from ..vamp_runner import run_scan_active
-    
-    try:
-        result = run_scan_active(
-            email=email,
-            url=url,
-            year=year,
-            month=month
-        )
-        return {"status": "completed", "result": result}
-    except Exception as e:
-        return {"status": "error", "error": str(e)}, 500
+
+    email = str(payload.get("email") or "") or None
+    url = str(payload.get("url") or "")
+    year = payload.get("year")
+    month = payload.get("month")
+    deep_read = payload.get("deep_read", True)
+
+    if not url:
+        return {"status": "error", "error": "Missing 'url' in request body."}, 400
+
+    from ..vamp_agent import run_scan_active_ws
+
+    with _new_event_loop() as loop:
+        try:
+            result = loop.run_until_complete(
+                run_scan_active_ws(
+                    email=email,
+                    year=year,
+                    month=month,
+                    url=url,
+                    deep_read=deep_read,
+                    progress_callback=None,
+                )
+            )
+        except Exception as exc:  # pragma: no cover - runtime failures surface to caller
+            return {"status": "error", "error": str(exc)}, 500
+
+    return {"status": "completed", "result": result}
 
 @api.route("/scan/status", methods=["GET"])
 @json_response
