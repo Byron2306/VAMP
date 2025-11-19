@@ -40,6 +40,27 @@ if not defined VAMP_ONEDRIVE_PASSWORD set "VAMP_ONEDRIVE_PASSWORD=Byron230686!"
 if not defined VAMP_GOOGLE_USERNAME set "VAMP_GOOGLE_USERNAME=20172672@g.nwu.ac.za"
 if not defined VAMP_GOOGLE_PASSWORD set "VAMP_GOOGLE_PASSWORD=Byron230686!"
 
+echo.
+echo [Health] Checking connectivity to the Ollama / VAMP Cloud endpoint...
+set "OLLAMA_ENV_FILE=%TEMP%\vamp_ollama_env.txt"
+if exist "%OLLAMA_ENV_FILE%" del "%OLLAMA_ENV_FILE%" >NUL 2>&1
+python scripts\check_ollama.py --env-file "%OLLAMA_ENV_FILE%"
+set "OLLAMA_HEALTH_CODE=%ERRORLEVEL%"
+if exist "%OLLAMA_ENV_FILE%" (
+    for /f "usebackq tokens=1,* delims==" %%A in ("%OLLAMA_ENV_FILE%") do (
+        if /I "%%~A"=="OLLAMA_API_URL" set "OLLAMA_API_URL=%%~B"
+        if /I "%%~A"=="OLLAMA_MODEL" set "OLLAMA_MODEL=%%~B"
+    )
+)
+if "%OLLAMA_HEALTH_CODE%"=="0" (
+    echo       Ollama endpoint is reachable at %OLLAMA_API_URL%.
+) else if "%OLLAMA_HEALTH_CODE%"=="2" (
+    echo WARNING: Ollama endpoint could not be reached. Continuing in offline mode.
+    set "VAMP_AI_OFFLINE=1"
+) else (
+    goto :error
+)
+
 echo [1/5] Verifying Python installation...
 where python >NUL 2>&1
 if errorlevel 1 (
@@ -120,6 +141,7 @@ echo.
 
 :cleanup
 if exist .venv\Scripts\deactivate.bat call .venv\Scripts\deactivate.bat >NUL 2>&1
+if defined OLLAMA_ENV_FILE if exist "%OLLAMA_ENV_FILE%" del "%OLLAMA_ENV_FILE%" >NUL 2>&1
 popd
 pause
 exit /b %EXIT_CODE%

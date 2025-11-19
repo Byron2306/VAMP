@@ -811,3 +811,56 @@ def ask_ollama(prompt: str) -> str:
         if stream_text:
             return stream_text
         return "(AI error) Unexpected response format"
+
+
+@lru_cache(maxsize=1)
+def _brain_asset_manifest() -> List[Dict[str, Any]]:
+    assets: List[Dict[str, Any]] = []
+    for path in sorted(BRAIN_DATA_DIR.glob("*")):
+        if not path.is_file():
+            continue
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        assets.append(
+            {
+                "name": path.name,
+                "bytes": size,
+                "suffix": path.suffix or "",
+            }
+        )
+    return assets
+
+
+def describe_brain_assets() -> Dict[str, Any]:
+    """Return metadata showing which NWU Brain files seed the system prompt."""
+
+    assets = _brain_asset_manifest()
+    return {
+        "manifest_path": str(MANIFEST_PATH),
+        "system_prompt_path": str(SYSTEM_PROMPT_PATH),
+        "system_prompt_bytes": len(SYSTEM_PROMPT.encode("utf-8")) if SYSTEM_PROMPT else 0,
+        "system_prompt_preview": SYSTEM_PROMPT[:400],
+        "asset_count": len(assets),
+        "assets": assets,
+    }
+
+
+def describe_ai_backend() -> Dict[str, Any]:
+    """Expose resolved Ollama endpoint + NWU Brain metadata for diagnostics."""
+
+    resolved_url = (os.environ.get("OLLAMA_API_URL") or OLLAMA_API_URL).strip()
+    resolved_model = (os.environ.get("OLLAMA_MODEL") or OLLAMA_MODEL).strip()
+
+    return {
+        "endpoint": {
+            "url": resolved_url,
+            "model": resolved_model,
+            "timeout_s": OLLAMA_TIMEOUT_S,
+            "is_ollama": _is_ollama_endpoint(resolved_url),
+            "reasoning_mode": _normalised_reasoning_mode(),
+            "reasoning_directive": _reasoning_directive(resolved_model, resolved_url),
+        },
+        "brain": describe_brain_assets(),
+    }

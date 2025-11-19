@@ -50,3 +50,19 @@ def test_ask_ollama_uses_streaming_fallback(monkeypatch):
 
     result = ollama_client.ask_ollama("hello")
     assert result == "hello"
+
+
+def test_describe_brain_assets_lists_files():
+    info = ollama_client.describe_brain_assets()
+    assert info["asset_count"] >= 1
+    assert info["system_prompt_bytes"] > 0
+    assert any(asset["name"].endswith("system_nwu.txt") for asset in info["assets"])
+
+
+def test_describe_ai_backend_includes_endpoint(monkeypatch):
+    monkeypatch.setenv("OLLAMA_API_URL", "http://127.0.0.1:11434/api/chat")
+    monkeypatch.setenv("OLLAMA_MODEL", "gpt-oss:120-b")
+
+    info = ollama_client.describe_ai_backend()
+    assert info["endpoint"]["is_ollama"] is True
+    assert info["brain"]["system_prompt_bytes"] > 0

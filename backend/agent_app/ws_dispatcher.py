@@ -28,6 +28,7 @@ try:  # pragma: no cover - Playwright may be optional in tests
 except Exception:  # pragma: no cover - degrade gracefully when agent missing
     run_scan_active_ws = None  # type: ignore[assignment]
 from ..vamp_store import VampStore, _uid
+from .ai_probe import ai_runtime_probe
 from .app_state import agent_state
 
 logger = logging.getLogger(__name__)
@@ -289,6 +290,7 @@ class WSActionDispatcher:
             self._socketio.emit("response", _fail(action, "unsupported_action"), to=sid)
             return
 
+        ai_runtime_probe.note_action(sid, action)
         try:
             handler(sid, payload)
         except Exception as exc:  # pragma: no cover - defensive programming
@@ -380,6 +382,10 @@ class WSActionDispatcher:
         deep_read = bool(msg.get("deep_read", True))
 
         logger.info("Starting scan for %s %d-%02d", uid, year, month)
+        context_snapshot = dict(msg)
+        context_snapshot.setdefault("email", email)
+        context_snapshot.setdefault("year", year)
+        context_snapshot.setdefault("month", month)
 
         async def on_progress(progress: float, status: str) -> None:
             payload = {
@@ -390,9 +396,17 @@ class WSActionDispatcher:
             session.ok("SCAN_ACTIVE/PROGRESS", payload)
 
         orchestrated: Optional[Dict[str, Any]] = None
+        orchestrator_error: Optional[str] = None
+        autop_prompt = (
+            "Execute the scan_active connector for the provided user context right now. "
+            f"Target URL: {url}. Deep read: {'true' if deep_read else 'false'}. "
+            "After the connector finishes, summarise the scan outcome, including how many "
+            "new evidence items were stored."
+        )
+        brain_msg: Optional[Dict[str, Any]] = None
         try:
             if ask_ollama:
-                brain_msg = dict(msg)
+                brain_msg = dict(context_snapshot)
                 brain_msg.setdefault("email", email or uid)
                 brain_msg.setdefault("year", year)
                 brain_msg.setdefault("month", month)
@@ -400,19 +414,26 @@ class WSActionDispatcher:
                 brain_msg.setdefault("deep_read", deep_read)
                 orchestrated = await _orchestrate_answer(
                     brain_msg,
-                    (
-                        "Execute the scan_active connector for the provided user context right now. "
-                        f"Target URL: {url}. Deep read: {'true' if deep_read else 'false'}. "
-                        "After the connector finishes, summarise the scan outcome, including how many "
-                        "new evidence items were stored."
-                    ),
+                    autop_prompt,
                     store=self._store,
                     progress_cb=on_progress,
                     purpose="scan",
                 )
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.warning("AI orchestrated scan failed: %s", exc)
+            orchestrator_error = str(exc)
             orchestrated = None
+
+        if brain_msg is not None:
+            _record_ai_runtime(
+                question=autop_prompt,
+                payload=orchestrated,
+                mode="scan",
+                purpose="scan_active",
+                sid=sid,
+                context=brain_msg,
+                error=orchestrator_error,
+            )
 
         try:
             added = 0
@@ -532,6 +553,7 @@ class WSActionDispatcher:
 
         mode = str(context_msg.get("mode") or "").strip().lower() or "ask"
         is_brain_scan = mode in {"brain_scan", "scan", "scan_via_brain"}
+        purpose = "scan" if is_brain_scan else "ask"
 
         async def forward_progress(progress: float, status: str) -> None:
             payload = {
@@ -605,6 +627,14 @@ class WSActionDispatcher:
             session.ok("SCAN_ACTIVE/COMPLETE", complete_payload)
 
         session.ok("ASK", payload)
+        _record_ai_runtime(
+            question=question,
+            payload=payload,
+            mode=mode,
+            purpose=purpose,
+            sid=sid,
+            context=context_msg,
+        )
 
     async def _run_ask_feedback(self, sid: str, msg: Dict[str, Any]) -> None:
         session = _SessionEmitter(self._socketio, sid)
@@ -647,7 +677,17 @@ class WSActionDispatcher:
             else:
                 answer = _basic_text_reply(question, role="VAMP Assessor")
 
-        session.ok("ASK_FEEDBACK", {"answer": answer})
+        payload = {"answer": answer, "mode": "assessor", "tools": []}
+        session.ok("ASK_FEEDBACK", payload)
+        if question:
+            _record_ai_runtime(
+                question=question,
+                payload=payload,
+                mode="assessor",
+                purpose="assessor",
+                sid=sid,
+                context=msg,
+            )
 
 
 async def _execute_action(

@@ -92,6 +92,9 @@ def isolate_agent_runtime(monkeypatch, tmp_path):
         classmethod(lambda cls, state_file=state_dir / "update_status.json": cls(state_file=state_file)),
     )
 
+    import backend.agent_app.ai_probe as ai_probe
+    ai_probe.ai_runtime_probe.reset()
+
     import backend.agent_app.app_state as app_state
     app_state._SINGLETON = None
 
@@ -125,6 +128,18 @@ def test_ping_endpoint():
     assert payload["state"]
 
 
+def test_ai_status_endpoint_reports_brain_and_endpoint():
+    app, _ = create_app()
+    client = app.test_client()
+    response = client.get('/api/ai/status')
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["backend"]["brain"]["asset_count"] > 0
+    assert payload["backend"]["brain"]["system_prompt_bytes"] > 0
+    assert payload["runtime"]["connected_clients"] == 0
+
+
 def test_websocket_message_roundtrip():
     app, socketio = create_app()
     flask_client = app.test_client()
@@ -147,6 +162,10 @@ def test_websocket_message_roundtrip():
         assert "data" in response_data
         assert response_data["data"]["year_doc"]["year"] == 2025
         assert response_data["data"]["year_doc"].get("total_items", 0) == 0
+
+        status_payload = flask_client.get('/api/ai/status').get_json()
+        assert status_payload["runtime"]["last_action"]["action"] == "GET_STATE"
+        assert status_payload["runtime"]["connected_clients"] >= 1
     finally:
         test_client.disconnect()
 
