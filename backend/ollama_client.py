@@ -169,6 +169,80 @@ def _reasoning_directive(model: str, url: Optional[str] = None) -> Optional[Dict
 # Utilities
 # --------------------------------------------------------------------------------------
 
+def _json_stream_chunks(raw: str) -> List[Any]:
+    """Parse every JSON object that can be found inside an SSE/raw body."""
+
+    if not raw:
+        return []
+
+    decoder = json.JSONDecoder()
+    payloads: List[Any] = []
+    idx = 0
+    length = len(raw)
+
+    while idx < length:
+        char = raw[idx]
+
+        # Skip whitespace, BOMs, record separators, and SSE metadata prefixes
+        if char in " \t\r\n,":
+            idx += 1
+            continue
+        if char in "\ufeff\x1e":
+            idx += 1
+            continue
+        if raw.startswith("data:", idx):
+            idx += len("data:")
+            continue
+        if raw.startswith("event:", idx):
+            # Skip the rest of the line
+            newline = raw.find("\n", idx)
+            idx = length if newline == -1 else newline + 1
+            continue
+        if raw.startswith("[DONE]", idx):
+            idx += len("[DONE]")
+            continue
+        if char not in "{[":
+            idx += 1
+            continue
+
+        try:
+            obj, end = decoder.raw_decode(raw, idx)
+        except json.JSONDecodeError:
+            idx += 1
+            continue
+
+        payloads.append(obj)
+        idx = end
+
+    return payloads
+
+
+def _select_preferred_chunk(chunks: List[Any]) -> Optional[Any]:
+    """Pick the chunk that most closely resembles an LLM response."""
+
+    def _looks_like_completion(chunk: Any) -> bool:
+        if not isinstance(chunk, dict):
+            return False
+        if chunk.get("choices"):
+            return True
+        message = chunk.get("message")
+        if isinstance(message, dict) and message.get("content"):
+            return True
+        if isinstance(chunk.get("response"), str):
+            return True
+        return False
+
+    for chunk in reversed(chunks):
+        if _looks_like_completion(chunk):
+            return chunk
+
+    for chunk in reversed(chunks):
+        if isinstance(chunk, dict):
+            return chunk
+
+    return chunks[-1] if chunks else None
+
+
 def _coerce_json_from_text(raw: str) -> Optional[Any]:
     """Best-effort JSON extraction supporting SSE/stream payloads."""
 
@@ -184,25 +258,10 @@ def _coerce_json_from_text(raw: str) -> Optional[Any]:
     except json.JSONDecodeError:
         pass
 
-    # Some providers (e.g., hosted GPT endpoints) stream Server-Sent Events
-    # even when ``stream`` is False. Try to parse each ``data:`` line and keep
-    # the last well-formed JSON object.
-    parsed_chunks: List[Any] = []
-    for line in raw.splitlines():
-        candidate = line.strip()
-        if not candidate:
-            continue
-        if candidate.startswith("data:"):
-            candidate = candidate[len("data:") :].strip()
-        if not candidate or candidate == "[DONE]":
-            continue
-        try:
-            parsed_chunks.append(json.loads(candidate))
-        except json.JSONDecodeError:
-            continue
-
-    if parsed_chunks:
-        return parsed_chunks[-1]
+    parsed_chunks = _json_stream_chunks(raw)
+    selected = _select_preferred_chunk(parsed_chunks)
+    if selected is not None:
+        return selected
 
     # As a final fallback, attempt to slice the outermost JSON object.
     start = raw.find("{")
@@ -215,6 +274,43 @@ def _coerce_json_from_text(raw: str) -> Optional[Any]:
             pass
 
     return None
+
+
+def _extract_text_from_stream(raw: str) -> Optional[str]:
+    """Combine incremental SSE payloads into a single assistant message."""
+
+    chunks = [chunk for chunk in _json_stream_chunks(raw) if isinstance(chunk, dict)]
+    if not chunks:
+        return None
+
+    parts: List[str] = []
+    for chunk in chunks:
+        response = chunk.get("response")
+        if isinstance(response, str) and response:
+            parts.append(response)
+            continue
+
+        message = chunk.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                parts.append(content)
+                continue
+
+        choices = chunk.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                delta = choice.get("delta") or {}
+                message_obj = choice.get("message") or {}
+                content = delta.get("content") or message_obj.get("content")
+                if isinstance(content, str) and content:
+                    parts.append(content)
+                    break
+
+    combined = "".join(parts).strip()
+    return combined or None
 
 
 def _http_post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -675,11 +771,19 @@ def ask_ollama(prompt: str) -> str:
     except ValueError:
         data = _coerce_json_from_text(response.text)
         if not isinstance(data, dict):
+            stream_text = _extract_text_from_stream(response.text)
+            if stream_text:
+                return stream_text
             return f"(AI error) Invalid JSON response (status {response.status_code})"
 
     if is_ollama_generate:
         text = data.get("response") if isinstance(data, dict) else None
-        return text or "(AI error) Unexpected Ollama generate response"
+        if text:
+            return text
+        stream_text = _extract_text_from_stream(response.text)
+        if stream_text:
+            return stream_text
+        return "(AI error) Unexpected Ollama generate response"
 
     if is_ollama_chat:
         if isinstance(data, dict):
@@ -695,9 +799,15 @@ def ask_ollama(prompt: str) -> str:
                     return choices[0]["message"]["content"]
                 except (KeyError, IndexError, TypeError):
                     pass
+        stream_text = _extract_text_from_stream(response.text)
+        if stream_text:
+            return stream_text
         return "(AI error) Unexpected Ollama chat response"
 
     try:
         return data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError):
+        stream_text = _extract_text_from_stream(response.text)
+        if stream_text:
+            return stream_text
         return "(AI error) Unexpected response format"

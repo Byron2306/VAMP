@@ -20,6 +20,19 @@ def test_coerce_json_from_fragment_text():
     assert parsed["choices"][0]["message"]["content"] == "fragment"
 
 
+def test_coerce_json_handles_record_separators():
+    raw = "\x1e{\"response\":\"hello\",\"done\":false}\n\x1e{\"response\":\" world\",\"done\":true}\n"
+    parsed = ollama_client._coerce_json_from_text(raw)
+    assert isinstance(parsed, dict)
+    assert parsed.get("done") is True
+
+
+def test_extract_text_from_stream_chunks():
+    raw = "\x1e{\"response\":\"hello\"}\n\x1e{\"message\":{\"content\":\" world\"},\"done\":true}\n"
+    combined = ollama_client._extract_text_from_stream(raw)
+    assert combined == "hello world"
+
+
 def test_ask_ollama_uses_streaming_fallback(monkeypatch):
     class DummyResponse:
         status_code = 200
