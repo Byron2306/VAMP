@@ -86,52 +86,6 @@ def _looks_like_ai_error(text: Any) -> bool:
     )
 
 
-def _record_ai_runtime(
-    *,
-    question: str,
-    payload: Optional[Dict[str, Any]],
-    mode: str,
-    purpose: str,
-    sid: str,
-    context: Optional[Dict[str, Any]] = None,
-    error: Optional[str] = None,
-) -> None:
-    if not question and not (payload or {}).get("answer"):
-        return
-
-    safe_payload = payload or {}
-    answer = str(safe_payload.get("answer") or "")
-    tools_raw = safe_payload.get("tools") if isinstance(safe_payload, dict) else []
-    tools: List[Dict[str, Any]] = []
-    if isinstance(tools_raw, list):
-        tools = [dict(t) for t in tools_raw if isinstance(t, dict)]
-
-    metadata: Dict[str, Any] = {"purpose": purpose, "sid": sid}
-    if context:
-        metadata["context_uid"] = _uid_from(context)
-        year = context.get("year")
-        month = context.get("month")
-        if isinstance(year, int):
-            metadata["year"] = year
-        if isinstance(month, int):
-            metadata["month"] = month
-
-    offline = bool((not ask_ollama) or not answer or _looks_like_ai_error(answer))
-
-    try:
-        ai_runtime_probe.record_call(
-            question=question,
-            mode=mode or purpose,
-            answer=answer,
-            tools=tools,
-            offline=offline,
-            error=error,
-            metadata=metadata,
-        )
-    except Exception:  # pragma: no cover - telemetry best effort
-        logger.debug("ai_runtime_probe.record_call failed", exc_info=True)
-
-
 def _strip_action_blocks(text: str) -> str:
     """Remove any ```tool``` or ```action``` blocks before returning a final answer."""
 
@@ -610,15 +564,9 @@ class WSActionDispatcher:
             session.ok("SCAN_ACTIVE/PROGRESS", payload)
 
         if not question:
-            fallback_payload = {"answer": _basic_text_reply("", role="VAMP AI"), "mode": mode, "tools": []}
-            session.ok("ASK", fallback_payload)
-            _record_ai_runtime(
-                question="",
-                payload=fallback_payload,
-                mode=mode,
-                purpose=purpose,
-                sid=sid,
-                context=context_msg,
+            session.ok(
+                "ASK",
+                {"answer": _basic_text_reply("", role="VAMP AI"), "mode": mode, "tools": []},
             )
             return
 
@@ -637,20 +585,13 @@ class WSActionDispatcher:
             logger.warning("orchestration failed: %s", exc)
             if is_brain_scan:
                 session.fail("SCAN_ACTIVE", str(exc))
-            fallback_payload = {
-                "answer": _basic_text_reply(question, role="VAMP AI"),
-                "mode": mode,
-                "tools": [],
-            }
-            session.ok("ASK", fallback_payload)
-            _record_ai_runtime(
-                question=question,
-                payload=fallback_payload,
-                mode=mode,
-                purpose=purpose,
-                sid=sid,
-                context=context_msg,
-                error=str(exc),
+            session.ok(
+                "ASK",
+                {
+                    "answer": _basic_text_reply(question, role="VAMP AI"),
+                    "mode": mode,
+                    "tools": [],
+                },
             )
             return
 

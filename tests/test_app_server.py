@@ -485,38 +485,3 @@ def test_ask_feedback_uses_basic_response_without_llm(monkeypatch):
         assert "assess" in answer.lower()
     finally:
         test_client.disconnect()
-
-
-def test_ai_status_tracks_last_call(monkeypatch):
-    import backend.agent_app.ws_dispatcher as ws_dispatcher
-
-    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "Ready for NWU duties")
-
-    app, socketio = create_app()
-    flask_client = app.test_client()
-    test_client = socketio.test_client(app, flask_test_client=flask_client)
-
-    try:
-        assert test_client.is_connected()
-        _drain_responses(test_client)
-
-        payload = {
-            "action": "ASK",
-            "year": 2025,
-            "month": 8,
-            "messages": [{"role": "user", "content": "status?"}],
-            "mode": "ask",
-        }
-
-        test_client.emit('message', payload)
-        time.sleep(0.2)
-        _drain_responses(test_client)
-
-        status_payload = flask_client.get('/api/ai/status').get_json()
-        last_call = status_payload["runtime"]["last_call"]
-        assert last_call
-        assert last_call["mode"] == "ask"
-        assert "ready" in last_call["answer"].lower()
-        assert status_payload["backend"]["brain"]["system_prompt_bytes"] > 0
-    finally:
-        test_client.disconnect()
