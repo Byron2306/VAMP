@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -398,3 +399,70 @@ def test_updates_check_apply_and_rollback(monkeypatch, tmp_path):
 
         rollback_resp = client.post('/api/updates/rollback').get_json()
         assert rollback_resp["message"] in {"rolled_back", "no_rollback"}
+
+
+def test_ask_returns_friendly_fallback_when_llm_fails(monkeypatch):
+    import backend.agent_app.ws_dispatcher as ws_dispatcher
+
+    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "(AI error) Unexpected response format")
+
+    app, socketio = create_app()
+    flask_client = app.test_client()
+    test_client = socketio.test_client(app, flask_test_client=flask_client)
+
+    try:
+        assert test_client.is_connected()
+        _drain_responses(test_client)
+
+        payload = {
+            "action": "ASK",
+            "year": 2025,
+            "month": 11,
+            "messages": [{"role": "user", "content": "hello"}],
+            "mode": "ask",
+        }
+
+        test_client.emit('message', payload)
+        time.sleep(0.1)
+        responses = _drain_responses(test_client)
+        ask_payload = next((item for item in responses if item.get("action") == "ASK"), None)
+        assert ask_payload, f"ASK response missing: {responses}"
+        answer = ask_payload["data"]["answer"]
+
+        assert "(AI error)" not in answer
+        assert "hello" in answer.lower()
+        assert ask_payload["data"].get("tools") == []
+    finally:
+        test_client.disconnect()
+
+
+def test_ask_feedback_uses_basic_response_without_llm(monkeypatch):
+    import backend.agent_app.ws_dispatcher as ws_dispatcher
+
+    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "(AI error) Unexpected response format")
+    monkeypatch.setattr(ws_dispatcher, "analyze_feedback_with_ollama", None)
+
+    app, socketio = create_app()
+    flask_client = app.test_client()
+    test_client = socketio.test_client(app, flask_test_client=flask_client)
+
+    try:
+        assert test_client.is_connected()
+        _drain_responses(test_client)
+
+        payload = {
+            "action": "ASK_FEEDBACK",
+            "messages": [{"role": "user", "content": "Please assess."}],
+        }
+
+        test_client.emit('message', payload)
+        time.sleep(0.1)
+        responses = _drain_responses(test_client)
+        feedback_payload = next((item for item in responses if item.get("action") == "ASK_FEEDBACK"), None)
+        assert feedback_payload, f"ASK_FEEDBACK response missing: {responses}"
+        answer = feedback_payload["data"]["answer"]
+
+        assert "(AI error)" not in answer
+        assert "assess" in answer.lower()
+    finally:
+        test_client.disconnect()
