@@ -9,6 +9,7 @@ REM ======================================================================
 
 REM Change to the repository root (one level up from scripts directory)
 pushd %~dp0\..
+set "REPO_ROOT=%CD%"
 
 echo.
 echo ============================================================
@@ -57,6 +58,12 @@ if not exist .venv (
 call .venv\Scripts\activate.bat
 if errorlevel 1 goto :error
 
+set "VENV_PYTHON=%REPO_ROOT%\.venv\Scripts\python.exe"
+if not exist "%VENV_PYTHON%" (
+    echo ERROR: Unable to locate the virtual environment interpreter at "%VENV_PYTHON%".
+    goto :error
+)
+
 echo.
 echo [3/5] Installing dependencies...
 python -m pip install --upgrade pip
@@ -72,15 +79,28 @@ python -m playwright install
 if errorlevel 1 goto :error
 
 echo.
-echo [5/5] Launching VAMP unified agent server
+echo [5/5] Launching VAMP unified backend (REST API + WS bridge)
 echo ============================================================
 echo   REST API: http://localhost:8080/api/*
 echo   WebSocket: ws://localhost:8080
 echo   VAMP Cloud Model: %VAMP_MODEL% @ %VAMP_CLOUD_API_URL%
 echo ============================================================
 echo.
-python -m backend.app_server
-set "EXIT_CODE=%ERRORLEVEL%"
+echo   -> Opening a window for the REST API server...
+start "VAMP REST API" cmd /k "cd /d %REPO_ROOT% && call .venv\Scripts\activate.bat && python -m backend.app_server"
+if errorlevel 1 goto :error
+
+echo   -> Waiting for the REST API to initialize before starting the bridge...
+timeout /t 5 /nobreak >NUL
+
+echo   -> Opening a window for the browser/extension bridge...
+start "VAMP WS Bridge" cmd /k "cd /d %REPO_ROOT% && call .venv\Scripts\activate.bat && python -m backend.ws_bridge"
+if errorlevel 1 goto :error
+
+echo.
+echo All backend processes are now running in their own Command Prompt windows.
+echo Close those windows (or press CTRL+C inside them) to stop the services.
+set "EXIT_CODE=0"
 goto :cleanup
 
 :error
