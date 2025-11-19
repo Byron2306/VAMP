@@ -36,6 +36,61 @@ logger = logging.getLogger(__name__)
 STORE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _record_ai_runtime(
+    *,
+    question: str,
+    payload: Optional[Dict[str, Any]],
+    mode: str,
+    purpose: str,
+    sid: str,
+    context: Optional[Dict[str, Any]] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Safely relay AI interaction metadata to the runtime probe.
+
+    ``ai_runtime_probe`` is used by the health endpoints to surface recent
+    interactions.  In the original application this helper used to live in a
+    module that is no longer imported which resulted in a ``NameError`` at
+    runtime (see issue reproduced in the user logs).  Re-creating the helper
+    locally keeps the dispatcher decoupled while restoring observability.
+    """
+
+    try:
+        payload = payload or {}
+        tools = [dict(tool) for tool in payload.get("tools", []) if isinstance(tool, dict)]
+        answer = str(
+            payload.get("answer")
+            or payload.get("brain_summary")
+            or payload.get("summary")
+            or ""
+        )
+        offline = bool(error)
+        if not offline:
+            offline = not ask_ollama or _looks_like_ai_error(answer)
+
+        metadata = {
+            "purpose": purpose,
+            "sid": sid,
+            "context": {
+                key: context.get(key)
+                for key in ("email", "name", "org", "year", "month")
+                if context and context.get(key) is not None
+            },
+        }
+
+        ai_runtime_probe.record_call(
+            question=question,
+            mode=mode,
+            answer=answer,
+            tools=tools,
+            offline=offline,
+            error=error,
+            metadata=metadata,
+        )
+    except Exception:  # pragma: no cover - probe failures must not break flows
+        logger.debug("Failed to record AI runtime information", exc_info=True)
+
+
 _ACTION_BLOCK = re.compile(r"```(?:tool|action)\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
 

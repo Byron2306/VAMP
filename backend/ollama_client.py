@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import requests
 import urllib.error
@@ -67,6 +67,10 @@ if not MANIFEST_PATH.is_file():
     raise FileNotFoundError(f"Brain manifest not found: {MANIFEST_PATH}")
 
 SCORER = NWUScorer(str(MANIFEST_PATH))
+
+
+class OllamaCallError(RuntimeError):
+    """Raised when an Ollama-compatible endpoint cannot satisfy a request."""
 
 
 def _read_text_file(path: Path) -> str:
@@ -132,6 +136,11 @@ OLLAMA_TIMEOUT_S = int(os.getenv("OLLAMA_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
 VAMP_REASONING_MODE = os.getenv("VAMP_REASONING_MODE", "high").strip().lower()
 OLLAMA_API_KEY_HEADER = os.getenv("OLLAMA_API_KEY_HEADER", "Authorization").strip() or "Authorization"
+_AUTODETECT_ENDPOINTS = (
+    "http://127.0.0.1:11434/api/chat",
+    "http://localhost:11434/api/chat",
+)
+_RESOLVED_OLLAMA_URL: Optional[str] = None
 
 
 def _normalised_reasoning_mode() -> Optional[str]:
@@ -698,30 +707,94 @@ def ask_ollama(prompt: str) -> str:
     the module.
     """
 
-    env_url = os.environ.get("OLLAMA_API_URL")
-    url = (env_url or OLLAMA_API_URL).strip()
+    env_url = (
+        os.environ.get("OLLAMA_API_URL")
+        or os.environ.get("VAMP_CLOUD_API_URL")
+        or ""
+    ).strip()
+    default_url = OLLAMA_API_URL.strip()
     env_model = os.environ.get("OLLAMA_MODEL")
     model = (env_model or OLLAMA_MODEL or "gpt-oss:120-b").strip()
 
-    if not url:
+    if not env_url and not default_url:
         return "(AI endpoint not configured)"
 
+    system_prompt = SYSTEM_PROMPT
+    user_message = (prompt or "").strip()
+    candidates = _candidate_api_urls(env_url, default_url)
+
+    global _RESOLVED_OLLAMA_URL
+    if not env_url and _RESOLVED_OLLAMA_URL:
+        cached = _RESOLVED_OLLAMA_URL
+        candidates = [cached] + [url for url in candidates if url != cached]
+
+    errors: List[str] = []
+    for url in candidates:
+        try:
+            text = _call_ollama_endpoint(url, model, system_prompt, user_message)
+        except OllamaCallError as exc:
+            errors.append(f"{url}: {exc}")
+            if not env_url and _RESOLVED_OLLAMA_URL == url:
+                _RESOLVED_OLLAMA_URL = None
+            continue
+        if not env_url:
+            _RESOLVED_OLLAMA_URL = url
+        return text
+
+    if errors:
+        joined = "; ".join(errors[:3])
+        return f"(AI error) Unable to reach any Ollama endpoint. {joined}"
+    return "(AI error) Unable to reach any Ollama endpoint."
+
+
+def _candidate_api_urls(explicit_url: str, default_url: str) -> List[str]:
+    """Return best-effort candidate endpoints preferring loopback before remote."""
+
+    candidates: List[str] = []
+    seen: Set[str] = set()
+
+    def _append(url: Optional[str]) -> None:
+        if not url:
+            return
+        trimmed = url.strip()
+        if not trimmed or trimmed in seen:
+            return
+        seen.add(trimmed)
+        candidates.append(trimmed)
+
+    if explicit_url:
+        _append(explicit_url)
+        return candidates
+
+    for url in _AUTODETECT_ENDPOINTS:
+        _append(url)
+
+    fallback_default = default_url or "https://cloud.ollama.ai/v1/chat/completions"
+    _append(fallback_default)
+    return candidates
+
+
+def _call_ollama_endpoint(
+    url: str,
+    model: str,
+    system_prompt: str,
+    user_message: str,
+) -> str:
     is_ollama_chat = "/api/chat" in url
     is_ollama_generate = "/api/generate" in url
     is_ollama = is_ollama_chat or is_ollama_generate or "ollama" in url.lower()
 
-    system_prompt = SYSTEM_PROMPT
-    user_message = (prompt or "").strip()
+    effective_model = model or "gpt-oss:120-b"
 
     if is_ollama_generate:
         payload = {
-            "model": model or "gpt-oss:120-b",
+            "model": effective_model,
             "prompt": _format_prompt_with_system(user_message),
             "stream": False,
         }
     elif is_ollama_chat:
         payload = {
-            "model": model or "gpt-oss:120-b",
+            "model": effective_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -730,7 +803,7 @@ def ask_ollama(prompt: str) -> str:
         }
     else:
         payload = {
-            "model": model or "gpt-oss:120-b",
+            "model": effective_model,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},
@@ -739,7 +812,7 @@ def ask_ollama(prompt: str) -> str:
         }
 
     if not is_ollama:
-        reasoning = _reasoning_directive(model, url)
+        reasoning = _reasoning_directive(effective_model, url)
         if reasoning:
             payload["reasoning"] = reasoning
 
@@ -750,8 +823,8 @@ def ask_ollama(prompt: str) -> str:
             headers=_requests_headers(is_ollama=is_ollama),
             timeout=OLLAMA_TIMEOUT_S,
         )
-    except requests.RequestException as exc:
-        return f"(AI error) {exc}"
+    except requests.RequestException as exc:  # pragma: no cover - network stack varies
+        raise OllamaCallError(f"(AI error) {exc}") from exc
 
     if response.status_code >= 400:
         detail = ""
@@ -764,7 +837,7 @@ def ask_ollama(prompt: str) -> str:
         except ValueError:
             detail = response.text.strip()
         detail = detail or "Request failed"
-        return f"(AI HTTP {response.status_code}) {detail}"
+        raise OllamaCallError(f"(AI HTTP {response.status_code}) {detail}")
 
     try:
         data = response.json()
@@ -774,7 +847,9 @@ def ask_ollama(prompt: str) -> str:
             stream_text = _extract_text_from_stream(response.text)
             if stream_text:
                 return stream_text
-            return f"(AI error) Invalid JSON response (status {response.status_code})"
+            raise OllamaCallError(
+                f"(AI error) Invalid JSON response (status {response.status_code})"
+            )
 
     if is_ollama_generate:
         text = data.get("response") if isinstance(data, dict) else None
@@ -783,7 +858,7 @@ def ask_ollama(prompt: str) -> str:
         stream_text = _extract_text_from_stream(response.text)
         if stream_text:
             return stream_text
-        return "(AI error) Unexpected Ollama generate response"
+        raise OllamaCallError("(AI error) Unexpected Ollama generate response")
 
     if is_ollama_chat:
         if isinstance(data, dict):
@@ -802,7 +877,7 @@ def ask_ollama(prompt: str) -> str:
         stream_text = _extract_text_from_stream(response.text)
         if stream_text:
             return stream_text
-        return "(AI error) Unexpected Ollama chat response"
+        raise OllamaCallError("(AI error) Unexpected Ollama chat response")
 
     try:
         return data["choices"][0]["message"]["content"]
@@ -810,7 +885,7 @@ def ask_ollama(prompt: str) -> str:
         stream_text = _extract_text_from_stream(response.text)
         if stream_text:
             return stream_text
-        return "(AI error) Unexpected response format"
+        raise OllamaCallError("(AI error) Unexpected response format")
 
 
 @lru_cache(maxsize=1)

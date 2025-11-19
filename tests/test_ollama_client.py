@@ -1,4 +1,5 @@
 import pytest
+import requests
 
 from backend import ollama_client
 
@@ -66,3 +67,49 @@ def test_describe_ai_backend_includes_endpoint(monkeypatch):
     info = ollama_client.describe_ai_backend()
     assert info["endpoint"]["is_ollama"] is True
     assert info["brain"]["system_prompt_bytes"] > 0
+
+
+def test_ask_ollama_autodetects_loopback(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_URL", raising=False)
+    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
+    monkeypatch.setenv("OLLAMA_MODEL", "demo")
+    monkeypatch.setattr(ollama_client, "_RESOLVED_OLLAMA_URL", None, raising=False)
+
+    calls = []
+
+    class SuccessResponse:
+        status_code = 200
+        text = "{\"message\": {\"content\": \"hi\"}}"
+
+        def json(self):  # pylint: disable=unused-argument
+            return {"message": {"content": "hi"}}
+
+    def fake_post(url, **_kwargs):
+        calls.append(url)
+        if "127.0.0.1" in url:
+            raise requests.ConnectionError("loopback offline")
+        return SuccessResponse()
+
+    monkeypatch.setattr(ollama_client.requests, "post", fake_post)
+
+    result = ollama_client.ask_ollama("hello")
+    assert result == "hi"
+    assert len(calls) >= 2
+    assert calls[0].startswith("http://127.0.0.1")
+    assert calls[1].startswith("http://localhost")
+    assert ollama_client._RESOLVED_OLLAMA_URL == calls[-1]
+
+
+def test_ask_ollama_reports_endpoint_failures(monkeypatch):
+    monkeypatch.delenv("OLLAMA_API_URL", raising=False)
+    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
+    monkeypatch.setattr(ollama_client, "_RESOLVED_OLLAMA_URL", None, raising=False)
+
+    def fake_post(url, **_kwargs):
+        raise requests.ConnectionError(f"{url} down")
+
+    monkeypatch.setattr(ollama_client.requests, "post", fake_post)
+
+    result = ollama_client.ask_ollama("hello")
+    assert "Unable to reach any Ollama endpoint" in result
+    assert "127.0.0.1" in result
