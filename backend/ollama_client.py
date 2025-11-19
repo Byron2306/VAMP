@@ -169,17 +169,65 @@ def _reasoning_directive(model: str, url: Optional[str] = None) -> Optional[Dict
 # Utilities
 # --------------------------------------------------------------------------------------
 
+def _coerce_json_from_text(raw: str) -> Optional[Any]:
+    """Best-effort JSON extraction supporting SSE/stream payloads."""
+
+    if not raw:
+        return None
+
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Some providers (e.g., hosted GPT endpoints) stream Server-Sent Events
+    # even when ``stream`` is False. Try to parse each ``data:`` line and keep
+    # the last well-formed JSON object.
+    parsed_chunks: List[Any] = []
+    for line in raw.splitlines():
+        candidate = line.strip()
+        if not candidate:
+            continue
+        if candidate.startswith("data:"):
+            candidate = candidate[len("data:") :].strip()
+        if not candidate or candidate == "[DONE]":
+            continue
+        try:
+            parsed_chunks.append(json.loads(candidate))
+        except json.JSONDecodeError:
+            continue
+
+    if parsed_chunks:
+        return parsed_chunks[-1]
+
+    # As a final fallback, attempt to slice the outermost JSON object.
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        snippet = raw[start : end + 1]
+        try:
+            return json.loads(snippet)
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 def _http_post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Dict[str, Any]:
-    """Minimal JSON POST."""
+    """Minimal JSON POST with SSE-aware fallback."""
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_S) as resp:
         raw = resp.read().decode("utf-8", errors="replace")
-        try:
-            return json.loads(raw)
-        except Exception:
-            # Non-JSON response — return structured error with raw body
-            return {"_error": "non_json_response", "raw": raw}
+        parsed = _coerce_json_from_text(raw)
+        if parsed is not None:
+            return parsed
+        # Non-JSON response — return structured error with raw body
+        return {"_error": "non_json_response", "raw": raw}
 
 
 def _headers() -> Dict[str, str]:
@@ -625,7 +673,9 @@ def ask_ollama(prompt: str) -> str:
     try:
         data = response.json()
     except ValueError:
-        return f"(AI error) Invalid JSON response (status {response.status_code})"
+        data = _coerce_json_from_text(response.text)
+        if not isinstance(data, dict):
+            return f"(AI error) Invalid JSON response (status {response.status_code})"
 
     if is_ollama_generate:
         text = data.get("response") if isinstance(data, dict) else None
