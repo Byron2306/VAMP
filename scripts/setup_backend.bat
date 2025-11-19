@@ -81,9 +81,9 @@ if errorlevel 1 goto :error
 echo.
 echo [5/5] Launching VAMP unified backend (REST API + WS bridge)
 echo ============================================================
-echo   REST API:      http://localhost:8080/api/*
-echo   WebSocket Hub: ws://localhost:8765 (bridge)
-echo   VAMP Cloud:    %VAMP_MODEL% @ %VAMP_CLOUD_API_URL%
+echo   REST API: http://localhost:8080/api/*
+echo   WebSocket: ws://localhost:8080
+echo   VAMP Cloud Model: %VAMP_MODEL% @ %VAMP_CLOUD_API_URL%
 echo ============================================================
 echo.
 echo   -> Opening a window for the REST API server...
