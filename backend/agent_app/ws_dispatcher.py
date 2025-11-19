@@ -38,6 +38,53 @@ STORE_DIR.mkdir(parents=True, exist_ok=True)
 _ACTION_BLOCK = re.compile(r"```(?:tool|action)\s*(\{.*?\})\s*```", re.DOTALL | re.IGNORECASE)
 
 
+def _basic_text_reply(question: str, role: str = "VAMP AI") -> str:
+    """Return a deterministic, human-friendly fallback response."""
+
+    prefix = f"[{role}]"
+    text = (question or "").strip()
+    if not text:
+        return f"{prefix} I didn't receive a question. Please try again."
+
+    lowered = text.lower()
+    greetings = ("hello", "hi", "hey", "howzit", "morning", "afternoon")
+    if any(word in lowered for word in greetings):
+        return (
+            f"{prefix} Hello! I'm still here to help summarise NWU evidence even without the "
+            "full AI service. Let me know what you need."
+        )
+
+    if "who" in lowered and "you" in lowered:
+        return (
+            f"{prefix} I'm the VAMP assistant that keeps track of NWU compliance evidence. "
+            "I can answer simple questions even when the LLM is offline."
+        )
+
+    return (
+        f"{prefix} I can't reach the AI model right now, but you asked: \"{text}\". "
+        "Please try again once the service reconnects."
+    )
+
+
+def _looks_like_ai_error(text: Any) -> bool:
+    """Best-effort detection for the placeholder errors returned by ``ask_ollama``."""
+
+    if not text:
+        return False
+
+    if not isinstance(text, str):
+        text = str(text)
+
+    lowered = text.strip().lower()
+    return (
+        lowered.startswith("(ai")
+        or lowered.startswith("ai error")
+        or "ai error" in lowered
+        or "ai http" in lowered
+        or "unexpected response format" in lowered
+    )
+
+
 def _strip_action_blocks(text: str) -> str:
     """Remove any ```tool``` or ```action``` blocks before returning a final answer."""
 
@@ -497,7 +544,7 @@ class WSActionDispatcher:
         if not question:
             session.ok(
                 "ASK",
-                {"answer": "[VAMP AI] No question received.", "mode": mode, "tools": []},
+                {"answer": _basic_text_reply("", role="VAMP AI"), "mode": mode, "tools": []},
             )
             return
 
@@ -519,7 +566,7 @@ class WSActionDispatcher:
             session.ok(
                 "ASK",
                 {
-                    "answer": f"[VAMP AI] (fallback) {question}",
+                    "answer": _basic_text_reply(question, role="VAMP AI"),
                     "mode": mode,
                     "tools": [],
                 },
@@ -566,7 +613,7 @@ class WSActionDispatcher:
             str(m.get("content", "")) for m in messages if isinstance(m, dict)
         ).strip()
 
-        answer = "[VAMP Assessor] No feedback request received."
+        answer = _basic_text_reply("", role="VAMP Assessor")
 
         if question:
             loop = asyncio.get_running_loop()
@@ -588,15 +635,17 @@ class WSActionDispatcher:
                     answer = await loop.run_in_executor(None, _call_feedback)
                 except Exception as exc:  # pragma: no cover - resilience path
                     logger.warning("analyze_feedback_with_ollama failed: %s", exc)
-                    answer = f"[VAMP Assessor] (fallback) {question}"
+                    answer = _basic_text_reply(question, role="VAMP Assessor")
             elif ask_ollama:
                 try:
                     answer = await loop.run_in_executor(None, partial(ask_ollama, question))
+                    if _looks_like_ai_error(answer):
+                        answer = _basic_text_reply(question, role="VAMP Assessor")
                 except Exception as exc:  # pragma: no cover
                     logger.warning("ask_ollama feedback fallback failed: %s", exc)
-                    answer = f"[VAMP Assessor] (fallback) {question}"
+                    answer = _basic_text_reply(question, role="VAMP Assessor")
             else:
-                answer = f"[VAMP Assessor] Received: {question}"
+                answer = _basic_text_reply(question, role="VAMP Assessor")
 
         session.ok("ASK_FEEDBACK", {"answer": answer})
 
@@ -726,7 +775,7 @@ async def _orchestrate_answer(
     """Drive an LLM loop that can invoke connectors before producing an answer."""
 
     if not ask_ollama:
-        return {"answer": f"[VAMP AI] Received: {question}", "tools": []}
+        return {"answer": _basic_text_reply(question, role="VAMP AI"), "tools": []}
 
     uid = _uid_from(msg)
     email = (msg.get("email") or "").strip() or uid
@@ -833,10 +882,21 @@ async def _orchestrate_answer(
                 "tools": tool_summaries,
             }
 
-        response = response or ""
-        history.append(("assistant", _strip_action_blocks(response)))
+        response_raw = response or ""
+        response_text = response_raw.strip()
+        if _looks_like_ai_error(response_text):
+            fallback = _basic_text_reply(question, role="VAMP AI")
+            if tool_summaries:
+                formatted = "\n".join(
+                    f"- {obs.get('tool') or 'unknown'} → {obs.get('status')} (items={obs.get('items_found', 0)})"
+                    for obs in tool_summaries
+                )
+                fallback = f"{fallback}\n\nTools used:\n{formatted}".strip()
+            return {"answer": fallback, "tools": tool_summaries}
 
-        action, error = _extract_action(response)
+        history.append(("assistant", _strip_action_blocks(response_raw)))
+
+        action, error = _extract_action(response_raw)
         if error:
             error_obs = {"tool": "", "status": "error", "error": error}
             history.append(("tool", json.dumps(error_obs, ensure_ascii=False)))
@@ -855,7 +915,7 @@ async def _orchestrate_answer(
             history.append(("tool", json.dumps(observation, ensure_ascii=False)))
             continue
 
-        final_answer = _strip_action_blocks(response)
+        final_answer = _strip_action_blocks(response_raw)
         if tool_summaries:
             formatted = "\n".join(
                 f"- {obs.get('tool') or 'unknown'} → {obs.get('status')} (items={obs.get('items_found', 0)})"
@@ -864,7 +924,9 @@ async def _orchestrate_answer(
             final_answer = f"{final_answer}\n\nTools used:\n{formatted}".strip()
         return {"answer": final_answer or "(AI returned no answer)", "tools": tool_summaries}
 
-    fallback = history[-1][1] if history else "(AI produced no answer)"
+    fallback = _basic_text_reply(question, role="VAMP AI")
+    if history:
+        fallback = f"{fallback}\n\nLast AI output: {history[-1][1]}".strip()
     if tool_summaries:
         formatted = "\n".join(
             f"- {obs.get('tool') or 'unknown'} → {obs.get('status')} (items={obs.get('items_found', 0)})"
