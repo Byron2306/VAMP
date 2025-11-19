@@ -108,6 +108,24 @@ The server exposes a REST API on `http://localhost:8080/api/*` that powers:
 
 > `backend.ws_bridge` and the browser extension now communicate via the agent server. Existing automation entrypoints (`vamp_agent.py`) continue to function but source credentials and configuration exclusively from the agent runtime.
 
+If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script now performs a lightweight health check using `scripts/check_ollama.py` before launching the REST API and WebSocket bridge, so you'll immediately see whether your configured Ollama/VAMP Cloud endpoint is reachable (and whether the backend will run in offline mode). When no endpoint is configured, the helper automatically probes `http://127.0.0.1:11434/api/chat` / `http://localhost:11434/api/chat` (local Ollama) before falling back to the hosted VAMP Cloud default, and exports whichever option succeeds to the rest of the setup pipeline.
+
+### 3b. 🔍 Inspect the AI stack live
+
+Once the server is running, hit `GET /api/ai/status` to confirm that:
+
+- the socket bridge sees your browser session (`runtime.connected_clients`),
+- the last WebSocket action routed through the backend is logged, and
+- the NWU Brain corpus is actually injected into every Ollama prompt (`backend.brain.system_prompt_bytes` and `assets`).
+
+Example:
+
+```bash
+curl http://127.0.0.1:8080/api/ai/status | jq
+```
+
+The response shows the resolved Ollama URL/model, whether a reasoning directive is being sent, and includes a short preview of the compiled NWU system prompt so you can verify the correct corpus is loaded.
+
 ### 4. 🖥 Launch the built-in dashboard (optional)
 
 Open `frontend/dashboard/index.html` in a modern browser to view health metrics, toggle connectors, inspect auth sessions, browse evidence, and trigger self-updates. The page speaks directly to the agent API—no additional build step required.

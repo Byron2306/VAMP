@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, request, send_from_directory
 from flask_socketio import SocketIO
+from .agent_app.ai_probe import ai_runtime_probe
 from .agent_app.api import api
 from .agent_app.app_state import agent_state
 from .agent_app.ws_dispatcher import WSActionDispatcher
@@ -57,11 +58,14 @@ def create_app() -> tuple:
         keeps the handler side-effect free so the handshake can succeed.
         """
 
-        logger.info("Client connected: sid=%s", request.sid)
-    
+        sid = request.sid
+        ai_runtime_probe.note_socket("connect", sid)
+        logger.info("Client connected: sid=%s", sid)
+
     @socketio.on('disconnect')
     def handle_disconnect() -> None:
         sid = request.sid
+        ai_runtime_probe.note_socket("disconnect", sid)
         logger.info("Client disconnected: sid=%s", sid)
         dispatcher.forget_session(sid)
 

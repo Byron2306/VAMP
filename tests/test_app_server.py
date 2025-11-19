@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import sys
+import time
 
 import pytest
 
@@ -91,6 +92,9 @@ def isolate_agent_runtime(monkeypatch, tmp_path):
         classmethod(lambda cls, state_file=state_dir / "update_status.json": cls(state_file=state_file)),
     )
 
+    import backend.agent_app.ai_probe as ai_probe
+    ai_probe.ai_runtime_probe.reset()
+
     import backend.agent_app.app_state as app_state
     app_state._SINGLETON = None
 
@@ -124,6 +128,18 @@ def test_ping_endpoint():
     assert payload["state"]
 
 
+def test_ai_status_endpoint_reports_brain_and_endpoint():
+    app, _ = create_app()
+    client = app.test_client()
+    response = client.get('/api/ai/status')
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["backend"]["brain"]["asset_count"] > 0
+    assert payload["backend"]["brain"]["system_prompt_bytes"] > 0
+    assert payload["runtime"]["connected_clients"] == 0
+
+
 def test_websocket_message_roundtrip():
     app, socketio = create_app()
     flask_client = app.test_client()
@@ -146,6 +162,10 @@ def test_websocket_message_roundtrip():
         assert "data" in response_data
         assert response_data["data"]["year_doc"]["year"] == 2025
         assert response_data["data"]["year_doc"].get("total_items", 0) == 0
+
+        status_payload = flask_client.get('/api/ai/status').get_json()
+        assert status_payload["runtime"]["last_action"]["action"] == "GET_STATE"
+        assert status_payload["runtime"]["connected_clients"] >= 1
     finally:
         test_client.disconnect()
 
@@ -398,3 +418,105 @@ def test_updates_check_apply_and_rollback(monkeypatch, tmp_path):
 
         rollback_resp = client.post('/api/updates/rollback').get_json()
         assert rollback_resp["message"] in {"rolled_back", "no_rollback"}
+
+
+def test_ask_returns_friendly_fallback_when_llm_fails(monkeypatch):
+    import backend.agent_app.ws_dispatcher as ws_dispatcher
+
+    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "(AI error) Unexpected response format")
+
+    app, socketio = create_app()
+    flask_client = app.test_client()
+    test_client = socketio.test_client(app, flask_test_client=flask_client)
+
+    try:
+        assert test_client.is_connected()
+        _drain_responses(test_client)
+
+        payload = {
+            "action": "ASK",
+            "year": 2025,
+            "month": 11,
+            "messages": [{"role": "user", "content": "hello"}],
+            "mode": "ask",
+        }
+
+        test_client.emit('message', payload)
+        time.sleep(0.1)
+        responses = _drain_responses(test_client)
+        ask_payload = next((item for item in responses if item.get("action") == "ASK"), None)
+        assert ask_payload, f"ASK response missing: {responses}"
+        answer = ask_payload["data"]["answer"]
+
+        assert "(AI error)" not in answer
+        assert "hello" in answer.lower()
+        assert ask_payload["data"].get("tools") == []
+    finally:
+        test_client.disconnect()
+
+
+def test_ask_feedback_uses_basic_response_without_llm(monkeypatch):
+    import backend.agent_app.ws_dispatcher as ws_dispatcher
+
+    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "(AI error) Unexpected response format")
+    monkeypatch.setattr(ws_dispatcher, "analyze_feedback_with_ollama", None)
+
+    app, socketio = create_app()
+    flask_client = app.test_client()
+    test_client = socketio.test_client(app, flask_test_client=flask_client)
+
+    try:
+        assert test_client.is_connected()
+        _drain_responses(test_client)
+
+        payload = {
+            "action": "ASK_FEEDBACK",
+            "messages": [{"role": "user", "content": "Please assess."}],
+        }
+
+        test_client.emit('message', payload)
+        time.sleep(0.1)
+        responses = _drain_responses(test_client)
+        feedback_payload = next((item for item in responses if item.get("action") == "ASK_FEEDBACK"), None)
+        assert feedback_payload, f"ASK_FEEDBACK response missing: {responses}"
+        answer = feedback_payload["data"]["answer"]
+
+        assert "(AI error)" not in answer
+        assert "assess" in answer.lower()
+    finally:
+        test_client.disconnect()
+
+
+def test_ai_status_tracks_last_call(monkeypatch):
+    import backend.agent_app.ws_dispatcher as ws_dispatcher
+
+    monkeypatch.setattr(ws_dispatcher, "ask_ollama", lambda prompt: "Ready for NWU duties")
+
+    app, socketio = create_app()
+    flask_client = app.test_client()
+    test_client = socketio.test_client(app, flask_test_client=flask_client)
+
+    try:
+        assert test_client.is_connected()
+        _drain_responses(test_client)
+
+        payload = {
+            "action": "ASK",
+            "year": 2025,
+            "month": 8,
+            "messages": [{"role": "user", "content": "status?"}],
+            "mode": "ask",
+        }
+
+        test_client.emit('message', payload)
+        time.sleep(0.2)
+        _drain_responses(test_client)
+
+        status_payload = flask_client.get('/api/ai/status').get_json()
+        last_call = status_payload["runtime"]["last_call"]
+        assert last_call
+        assert last_call["mode"] == "ask"
+        assert "ready" in last_call["answer"].lower()
+        assert status_payload["backend"]["brain"]["system_prompt_bytes"] > 0
+    finally:
+        test_client.disconnect()

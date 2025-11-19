@@ -9,6 +9,8 @@ from typing import Any, Callable, Dict, Iterator
 
 from flask import Blueprint, Response, jsonify, request
 
+from ..ollama_client import describe_ai_backend
+from .ai_probe import ai_runtime_probe
 from .app_state import AgentAppState, agent_state
 from .plugin_manager import PluginDefinition
 
@@ -36,6 +38,15 @@ def get_health() -> Dict[str, object]:
         "auth_sessions": health.auth_sessions,
         "evidence": health.evidence_summary,
         "last_updated": health.last_updated,
+    }
+
+
+@api.route("/ai/status", methods=["GET"])
+@json_response
+def ai_status() -> Dict[str, object]:
+    return {
+        "runtime": ai_runtime_probe.snapshot(),
+        "backend": describe_ai_backend(),
     }
 
 
