@@ -68,7 +68,7 @@ VAMP/
 - 💾 Secrets vaulted at rest, plus durable browser storage states (no leaked env vars)
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
-- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every Ollama gpt-oss:120-b prompt
+- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every Ollama gemma3:4b-b prompt
 - 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular plugin design: connectors can be enabled/disabled or reconfigured live from the agent dashboard
 - 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
@@ -134,7 +134,7 @@ Open `frontend/dashboard/index.html` in a modern browser to view health metrics,
 
 ```powershell
 $env:OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
-$env:OLLAMA_MODEL   = "gpt-oss:120-b"
+$env:OLLAMA_MODEL   = "gemma3:4b-b"
 ```
 
 > `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. The default configuration assumes the local Ollama runtime, so no API keys are required.
@@ -205,7 +205,7 @@ The bridge now relies on the agent server for configuration and authentication. 
 |--------------------------------------|---------------------------------------------|
 | `backend/vamp_agent.py`              | Core scraping + Playwright automation       |
 | `backend/ws_bridge.py`               | WebSocket bridge to frontend                |
-| `backend/ollama_client.py`           | Client to Ollama gpt-oss:120-b API          |
+| `backend/ollama_client.py`           | Client to Ollama gemma3:4b-b API          |
 | `backend/nwu_brain/scoring.py`       | Loads NWU brain manifest + scoring logic    |
 | `backend/data/nwu_brain/*.json`      | Manifest, policy registry, routing rules    |
 | `backend/data/states/`               | Chrome storage states (generated at runtime)|
@@ -267,5 +267,5 @@ Internal use only – NWU Research and Policy Development.
 Built with ❤️ using:
 - Microsoft Playwright
 - Python 3.10
-- Ollama LLM (gpt-oss:120-b cloud)
+- Ollama LLM (gemma3:4b-b cloud)
 - NWU’s brain.json and scoring logic
