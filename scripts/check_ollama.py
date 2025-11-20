@@ -25,7 +25,7 @@ class EndpointCandidate:
 
 def _probe(url: str, model: str) -> Tuple[int, str]:
     payload = {
-        "model": model or "gpt-oss:120-b",
+        "model": model or "gpt-oss:120b",
         "messages": [{"role": "user", "content": "health-check"}],
         "stream": False,
     }
@@ -53,7 +53,7 @@ def _normalise_url(url: str) -> str:
 def _candidate_endpoints(explicit_url: str, model: str) -> List[EndpointCandidate]:
     """Return candidate endpoints (explicit override → loopback defaults)."""
 
-    canonical_model = model or "gpt-oss:120-b"
+    canonical_model = model or "gpt-oss:120b"
     candidates: List[EndpointCandidate] = []
 
     def _append(url: Optional[str], source: str) -> None:
