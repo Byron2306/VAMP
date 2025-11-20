@@ -23,7 +23,6 @@ def test_main_success_with_explicit_url(monkeypatch):
 
 def test_main_autodetect_prefers_loopback(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_URL", raising=False)
-    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
 
     calls = []
 
@@ -40,7 +39,6 @@ def test_main_autodetect_prefers_loopback(monkeypatch):
 
 def test_main_records_failure_reasons(monkeypatch, capsys):
     monkeypatch.delenv("OLLAMA_API_URL", raising=False)
-    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
 
     def _fake_probe(url, model):
         raise ConnectionRefusedError(f"{url} down")

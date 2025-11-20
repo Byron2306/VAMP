@@ -51,7 +51,7 @@ def _normalise_url(url: str) -> str:
 
 
 def _candidate_endpoints(explicit_url: str, model: str) -> List[EndpointCandidate]:
-    """Return candidate endpoints (explicit → loopback → remote default)."""
+    """Return candidate endpoints (explicit override → loopback defaults)."""
 
     canonical_model = model or "gpt-oss:120-b"
     candidates: List[EndpointCandidate] = []
@@ -77,7 +77,6 @@ def _candidate_endpoints(explicit_url: str, model: str) -> List[EndpointCandidat
     for loopback in ("http://127.0.0.1:11434/api/chat", "http://localhost:11434/api/chat"):
         _append(loopback, "local Ollama (loopback)")
 
-    _append("https://cloud.ollama.ai/v1/chat/completions", "VAMP Cloud default")
     return candidates
 
 
@@ -121,8 +120,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     args = parser.parse_args(list(argv) if argv is not None else None)
 
-    explicit_url = (os.getenv("OLLAMA_API_URL") or os.getenv("VAMP_CLOUD_API_URL") or "").strip()
-    model = (os.getenv("OLLAMA_MODEL") or os.getenv("VAMP_MODEL") or "").strip()
+    explicit_url = (os.getenv("OLLAMA_API_URL") or "").strip()
+    model = (os.getenv("OLLAMA_MODEL") or "").strip()
 
     if explicit_url:
         try:

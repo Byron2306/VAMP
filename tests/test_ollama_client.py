@@ -71,7 +71,6 @@ def test_describe_ai_backend_includes_endpoint(monkeypatch):
 
 def test_ask_ollama_autodetects_loopback(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_URL", raising=False)
-    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
     monkeypatch.setenv("OLLAMA_MODEL", "demo")
     monkeypatch.setattr(ollama_client, "_RESOLVED_OLLAMA_URL", None, raising=False)
 
@@ -102,7 +101,6 @@ def test_ask_ollama_autodetects_loopback(monkeypatch):
 
 def test_ask_ollama_reports_endpoint_failures(monkeypatch):
     monkeypatch.delenv("OLLAMA_API_URL", raising=False)
-    monkeypatch.delenv("VAMP_CLOUD_API_URL", raising=False)
     monkeypatch.setattr(ollama_client, "_RESOLVED_OLLAMA_URL", None, raising=False)
 
     def fake_post(url, **_kwargs):
