@@ -23,8 +23,8 @@ REM You can also pre-set these variables before running the script to
 REM override the defaults below.
 REM ----------------------------------------------------------------------
 if not defined OLLAMA_API_URL set "OLLAMA_API_URL=http://127.0.0.1:11434/api/chat"
-if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120-b"
-set "VAMP_MODEL=%OLLAMA_MODEL%"
+if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120b"
+
 
 REM Account Credentials (defaults can be overridden through environment)
 if not defined VAMP_OUTLOOK_USERNAME set "VAMP_OUTLOOK_USERNAME=byron.bunt@nwu.ac.za"
