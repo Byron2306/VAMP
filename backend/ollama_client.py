@@ -752,10 +752,6 @@ def _candidate_api_urls(explicit_url: str, default_url: str) -> List[str]:
     for url in base_candidates:
         if "/api/chat" in url:
             _append(url.replace("/api/chat", "/api/generate"))
-        elif "/api/generate" not in url:
-            trimmed = url.rstrip("/")
-            _append(f"{trimmed}/api/chat")
-            _append(f"{trimmed}/api/generate")
 
     return candidates
 
