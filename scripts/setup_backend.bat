@@ -23,7 +23,7 @@ REM You can also pre-set these variables before running the script to
 REM override the defaults below.
 REM ----------------------------------------------------------------------
 if not defined OLLAMA_API_URL set "OLLAMA_API_URL=http://127.0.0.1:11434/api/chat"
-if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120b"
+if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gemma3:4b"
 
 
 REM Account Credentials (defaults can be overridden through environment)
