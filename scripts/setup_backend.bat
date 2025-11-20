@@ -13,7 +13,7 @@ set "REPO_ROOT=%CD%"
 
 echo.
 echo ============================================================
-echo   VAMP - Complete Setup with VAMP Cloud Integration
+echo   VAMP - Complete Setup (local Ollama only)
 echo ============================================================
 echo.
 
@@ -22,15 +22,9 @@ REM Configuration: update these values to match your accounts if needed.
 REM You can also pre-set these variables before running the script to
 REM override the defaults below.
 REM ----------------------------------------------------------------------
-if not defined VAMP_CLOUD_API_URL set "VAMP_CLOUD_API_URL=https://cloud.ollama.ai/v1/chat/completions"
-if not defined VAMP_MODEL set "VAMP_MODEL=gpt-oss:120-b"
-if not defined VAMP_API_KEY set "VAMP_API_KEY=d444f50476e4441f9c09264c1613b4b6.NRm41XBwlEv-1aM7OOwwfMsT"
-if not defined VAMP_DEVICE_KEY set "VAMP_DEVICE_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINiiSC7VfKvBo761Lf5Qfa8/4kYraTVyJWgELAAAmo+D"
-
-REM Backwards compatibility: populate legacy Ollama variables for the Python backend
-set "OLLAMA_API_URL=%VAMP_CLOUD_API_URL%"
-set "OLLAMA_MODEL=%VAMP_MODEL%"
-set "OLLAMA_API_KEY=%VAMP_API_KEY%"
+if not defined OLLAMA_API_URL set "OLLAMA_API_URL=http://127.0.0.1:11434/api/chat"
+if not defined OLLAMA_MODEL set "OLLAMA_MODEL=gpt-oss:120-b"
+set "VAMP_MODEL=%OLLAMA_MODEL%"
 
 REM Account Credentials (defaults can be overridden through environment)
 if not defined VAMP_OUTLOOK_USERNAME set "VAMP_OUTLOOK_USERNAME=byron.bunt@nwu.ac.za"
@@ -41,7 +35,7 @@ if not defined VAMP_GOOGLE_USERNAME set "VAMP_GOOGLE_USERNAME=20172672@g.nwu.ac.
 if not defined VAMP_GOOGLE_PASSWORD set "VAMP_GOOGLE_PASSWORD=Byron230686!"
 
 echo.
-echo [Health] Checking connectivity to the Ollama / VAMP Cloud endpoint...
+echo [Health] Checking connectivity to the local Ollama endpoint...
 set "OLLAMA_ENV_FILE=%TEMP%\vamp_ollama_env.txt"
 if exist "%OLLAMA_ENV_FILE%" del "%OLLAMA_ENV_FILE%" >NUL 2>&1
 python scripts\check_ollama.py --env-file "%OLLAMA_ENV_FILE%"
@@ -104,7 +98,7 @@ echo [5/5] Launching VAMP unified backend (REST API + WS bridge)
 echo ============================================================
 echo   REST API: http://localhost:8080/api/*
 echo   WebSocket: ws://localhost:8080
-echo   VAMP Cloud Model: %VAMP_MODEL% @ %VAMP_CLOUD_API_URL%
+echo   Local Ollama Endpoint: %OLLAMA_API_URL% (%VAMP_MODEL%)
 echo ============================================================
 echo.
 echo   -> Opening a window for the REST API server...

@@ -108,7 +108,7 @@ The server exposes a REST API on `http://localhost:8080/api/*` that powers:
 
 > `backend.ws_bridge` and the browser extension now communicate via the agent server. Existing automation entrypoints (`vamp_agent.py`) continue to function but source credentials and configuration exclusively from the agent runtime.
 
-If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script now performs a lightweight health check using `scripts/check_ollama.py` before launching the REST API and WebSocket bridge, so you'll immediately see whether your configured Ollama/VAMP Cloud endpoint is reachable (and whether the backend will run in offline mode). When no endpoint is configured, the helper automatically probes `http://127.0.0.1:11434/api/chat` / `http://localhost:11434/api/chat` (local Ollama) before falling back to the hosted VAMP Cloud default, and exports whichever option succeeds to the rest of the setup pipeline.
+If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script now performs a lightweight health check using `scripts/check_ollama.py` before launching the REST API and WebSocket bridge, so you'll immediately see whether the local Ollama runtime (127.0.0.1:11434) is reachable. No API keys or cloud endpoints are required—the helper exports the detected loopback URL to every backend component automatically.
 
 ### 3b. 🔍 Inspect the AI stack live
 
@@ -133,12 +133,11 @@ Open `frontend/dashboard/index.html` in a modern browser to view health metrics,
 ### 3. 🧬 Set Environment Variables
 
 ```powershell
-$env:OLLAMA_API_URL = "https://cloud.ollama.ai/v1/chat/completions"
+$env:OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
 $env:OLLAMA_MODEL   = "gpt-oss:120-b"
-$env:OLLAMA_API_KEY = "<token>"
 ```
 
-> `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. If you are using a local Ollama gateway, set `OLLAMA_API_URL=http://127.0.0.1:11434/api/chat` instead.
+> `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. The default configuration assumes the local Ollama runtime, so no API keys are required.
 
 ### Agent-managed login and credential rotation
 

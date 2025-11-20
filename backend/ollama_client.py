@@ -3,8 +3,8 @@
 """
 ollama_client.py — Strict NWU Brain–aligned AI gateway for VAMP
 
-This module provides two high-level helpers that call an OpenAI/Ollama-
-compatible chat completions endpoint (e.g., Ollama, local gateway):
+This module provides two high-level helpers that call an Ollama-
+compatible chat completions endpoint (e.g., the local Ollama service):
 
   • analyze_evidence_with_ollama(item, extras=None)
   • analyze_feedback_with_ollama(items, questions, rubric=None, extras=None)
@@ -26,10 +26,9 @@ Key NWU Brain integrations (no stubs, no truncation):
      functions fall back gracefully with a safe default object.
 
 4) Configuration via environment:
-   OLLAMA_API_URL    (default: https://cloud.ollama.ai/v1/chat/completions)
-   OLLAMA_API_KEY    (required for hosted APIs; optional for local gateways)
-   OLLAMA_MODEL      (default: gpt-oss:120-b)
-   OLLAMA_TIMEOUT_S  (HTTP timeout; default: 120)
+  OLLAMA_API_URL    (default: http://127.0.0.1:11434/api/chat)
+  OLLAMA_MODEL      (default: gpt-oss:120-b)
+  OLLAMA_TIMEOUT_S  (HTTP timeout; default: 120)
    VAMP_BUNDLE_LIMIT   (max items to include in feedback bundle; default: 60)
 
 Dependencies:
@@ -37,7 +36,7 @@ Dependencies:
   - Standard library only (urllib for HTTP)
 
 Security:
-  - No secrets hardcoded. API key only read from environment.
+  - No secrets hardcoded. Local Ollama default requires no API keys.
 """
 
 from __future__ import annotations
@@ -129,13 +128,11 @@ SYSTEM_PROMPT = _brain_corpus()
 # HTTP configuration
 # --------------------------------------------------------------------------------------
 
-OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "https://cloud.ollama.ai/v1/chat/completions").strip()
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://127.0.0.1:11434/api/chat").strip()
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120-b").strip()
 OLLAMA_TIMEOUT_S = int(os.getenv("OLLAMA_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
 VAMP_REASONING_MODE = os.getenv("VAMP_REASONING_MODE", "high").strip().lower()
-OLLAMA_API_KEY_HEADER = os.getenv("OLLAMA_API_KEY_HEADER", "Authorization").strip() or "Authorization"
 _AUTODETECT_ENDPOINTS = (
     "http://127.0.0.1:11434/api/chat",
     "http://localhost:11434/api/chat",
@@ -336,11 +333,7 @@ def _http_post(url: str, headers: Dict[str, str], payload: Dict[str, Any]) -> Di
 
 
 def _headers() -> Dict[str, str]:
-    hdrs = {"Content-Type": "application/json"}
-    # API key is optional for some local gateways (e.g., no-auth reverse proxy)
-    if OLLAMA_API_KEY:
-        hdrs["Authorization"] = f"Bearer {OLLAMA_API_KEY}"
-    return hdrs
+    return {"Content-Type": "application/json"}
 
 
 def _ensure_scored(item: Dict[str, Any]) -> Dict[str, Any]:
@@ -670,21 +663,7 @@ def analyze_feedback_with_ollama(
 
 def _requests_headers(is_ollama: bool = False) -> Dict[str, str]:
     """Mirror _headers() but for requests-based helpers."""
-    headers = {"Content-Type": "application/json"}
-
-    env_api_key = os.environ.get("OLLAMA_API_KEY")
-    api_key = (env_api_key or OLLAMA_API_KEY).strip()
-    if is_ollama:
-        api_key = (env_api_key or api_key).strip()
-
-    if api_key:
-        header_name = OLLAMA_API_KEY_HEADER if is_ollama else "Authorization"
-        if header_name.lower() == "authorization" and not api_key.lower().startswith("bearer "):
-            headers[header_name] = f"Bearer {api_key}"
-        else:
-            headers[header_name] = api_key
-
-    return headers
+    return {"Content-Type": "application/json"}
 
 
 def _format_prompt_with_system(user_prompt: str) -> str:
@@ -707,11 +686,7 @@ def ask_ollama(prompt: str) -> str:
     the module.
     """
 
-    env_url = (
-        os.environ.get("OLLAMA_API_URL")
-        or os.environ.get("VAMP_CLOUD_API_URL")
-        or ""
-    ).strip()
+    env_url = (os.environ.get("OLLAMA_API_URL") or "").strip()
     default_url = OLLAMA_API_URL.strip()
     env_model = os.environ.get("OLLAMA_MODEL")
     model = (env_model or OLLAMA_MODEL or "gpt-oss:120-b").strip()
@@ -748,7 +723,7 @@ def ask_ollama(prompt: str) -> str:
 
 
 def _candidate_api_urls(explicit_url: str, default_url: str) -> List[str]:
-    """Return best-effort candidate endpoints preferring loopback before remote."""
+    """Return best-effort candidate endpoints preferring loopback."""
 
     candidates: List[str] = []
     seen: Set[str] = set()
@@ -769,7 +744,7 @@ def _candidate_api_urls(explicit_url: str, default_url: str) -> List[str]:
     for url in _AUTODETECT_ENDPOINTS:
         _append(url)
 
-    fallback_default = default_url or "https://cloud.ollama.ai/v1/chat/completions"
+    fallback_default = default_url or _AUTODETECT_ENDPOINTS[0]
     _append(fallback_default)
     return candidates
 
