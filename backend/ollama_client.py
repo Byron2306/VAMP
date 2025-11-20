@@ -739,13 +739,20 @@ def _candidate_api_urls(explicit_url: str, default_url: str) -> List[str]:
 
     if explicit_url:
         _append(explicit_url)
-        return candidates
+        base_candidates = list(candidates)
+    else:
+        for url in _AUTODETECT_ENDPOINTS:
+            _append(url)
 
-    for url in _AUTODETECT_ENDPOINTS:
-        _append(url)
+        fallback_default = default_url or _AUTODETECT_ENDPOINTS[0]
+        _append(fallback_default)
 
-    fallback_default = default_url or _AUTODETECT_ENDPOINTS[0]
-    _append(fallback_default)
+        base_candidates = list(candidates)
+
+    for url in base_candidates:
+        if "/api/chat" in url:
+            _append(url.replace("/api/chat", "/api/generate"))
+
     return candidates
 
 
