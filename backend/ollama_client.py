@@ -27,7 +27,7 @@ Key NWU Brain integrations (no stubs, no truncation):
 
 4) Configuration via environment:
   OLLAMA_API_URL    (default: http://127.0.0.1:11434/api/chat)
-  OLLAMA_MODEL      (default: gpt-oss:120-b)
+  OLLAMA_MODEL      (default: gpt-oss:120b)
   OLLAMA_TIMEOUT_S  (HTTP timeout; default: 120)
    VAMP_BUNDLE_LIMIT   (max items to include in feedback bundle; default: 60)
 
@@ -129,7 +129,7 @@ SYSTEM_PROMPT = _brain_corpus()
 # --------------------------------------------------------------------------------------
 
 OLLAMA_API_URL = os.getenv("OLLAMA_API_URL", "http://127.0.0.1:11434/api/chat").strip()
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120-b").strip()
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gpt-oss:120b").strip()
 OLLAMA_TIMEOUT_S = int(os.getenv("OLLAMA_TIMEOUT_S", "120").strip() or "120")
 VAMP_BUNDLE_LIMIT = int(os.getenv("VAMP_BUNDLE_LIMIT", "60").strip() or "60")
 VAMP_REASONING_MODE = os.getenv("VAMP_REASONING_MODE", "high").strip().lower()
@@ -689,7 +689,7 @@ def ask_ollama(prompt: str) -> str:
     env_url = (os.environ.get("OLLAMA_API_URL") or "").strip()
     default_url = OLLAMA_API_URL.strip()
     env_model = os.environ.get("OLLAMA_MODEL")
-    model = (env_model or OLLAMA_MODEL or "gpt-oss:120-b").strip()
+    model = (env_model or OLLAMA_MODEL or "gpt-oss:120b").strip()
 
     if not env_url and not default_url:
         return "(AI endpoint not configured)"
@@ -766,7 +766,7 @@ def _call_ollama_endpoint(
     is_ollama_generate = "/api/generate" in url
     is_ollama = is_ollama_chat or is_ollama_generate or "ollama" in url.lower()
 
-    effective_model = model or "gpt-oss:120-b"
+    effective_model = model or "gpt-oss:120b"
 
     if is_ollama_generate:
         payload = {
