@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
@@ -16,6 +18,7 @@ from .app_state import AgentAppState, agent_state
 from .plugin_manager import PluginDefinition
 
 api = Blueprint("agent_app", __name__, url_prefix="/api")
+logger = logging.getLogger(__name__)
 
 
 def json_response(func: Callable[..., Any]) -> Callable[..., Response]:
@@ -130,6 +133,27 @@ def _resolve_state_path(payload: Dict[str, object]) -> Optional[Path]:
     return path
 
 
+def _state_age_days(state_path: Path) -> Optional[float]:
+    """Return age of a storage state file in days or ``None`` if missing."""
+
+    if not state_path.exists():
+        return None
+
+    try:
+        age_seconds = time.time() - state_path.stat().st_mtime
+    except OSError:
+        return None
+
+    return age_seconds / 86400
+
+
+def _is_state_stale(state_path: Path, *, days: int = 7) -> bool:
+    """Determine whether a storage state file is older than the threshold."""
+
+    age = _state_age_days(state_path)
+    return age is None or age > days
+
+
 @api.route("/auth/session/refresh", methods=["POST"])
 @api.route("/auth/session", methods=["POST"])
 @json_response
@@ -140,6 +164,7 @@ def refresh_session_state() -> Dict[str, object]:
     identity = str(payload.get("identity", ""))
     notes = str(payload.get("notes", "")).strip()
     provided_path = _resolve_state_path(payload)
+    state_age_days: Optional[float] = None
 
     if not service:
         return {"status": "error", "error": "Missing 'service' in request body."}, 400
@@ -155,8 +180,27 @@ def refresh_session_state() -> Dict[str, object]:
             return {"status": "error", "error": str(exc)}, 500
     else:
         state_path = provided_path
+        state_age_days = _state_age_days(state_path)
         if not state_path.exists():
             state_path.write_text("{}", encoding="utf-8")
+
+    if state_age_days is None:
+        state_age_days = _state_age_days(state_path)
+
+    if _is_state_stale(state_path):
+        age_value = state_age_days or 0.0
+        logger.warning(
+            "Storage state for %s/%s is %.2f days old; may require re-authentication",
+            service,
+            identity or "default",
+            age_value,
+        )
+        return {
+            "status": "warning",
+            "state_path": str(state_path),
+            "age_days": age_value,
+            "message": "Storage state is stale; re-authentication may be required.",
+        }
 
     session = state.auth_manager.refresh_session_state(
         service,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import hashlib
+from collections import OrderedDict
 import inspect
 import io
 import json
@@ -119,8 +120,9 @@ _PLAYWRIGHT = None
 _BROWSER = None
 _CTX = None
 _PAGES: Dict[str, Any] = {}
-_SERVICE_CONTEXTS: Dict[str, Any] = {}
+_SERVICE_CONTEXTS: "OrderedDict[str, Any]" = OrderedDict()
 _CONTEXT_LOCK = asyncio.Lock()
+_MAX_CONTEXTS = 10
 
 # Service-specific storage state paths and URLs
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -273,6 +275,7 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
                         service or "generic",
                         identity or "default",
                     )
+                    _SERVICE_CONTEXTS.move_to_end(key)
                     return existing
             except Exception:
                 pass
@@ -319,6 +322,13 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
 
         await apply_stealth(context)
         _SERVICE_CONTEXTS[key] = context
+        _SERVICE_CONTEXTS.move_to_end(key)
+        if len(_SERVICE_CONTEXTS) > _MAX_CONTEXTS:
+            evicted_key, evicted_context = _SERVICE_CONTEXTS.popitem(last=False)
+            try:
+                await evicted_context.close()
+            except Exception:
+                logger.debug("Failed to close evicted context %s", evicted_key)
         return context
 
 # --------------------------------------------------------------------------------------
@@ -1312,17 +1322,13 @@ async def scrape_outlook(
             except Exception:
                 await page.wait_for_timeout(500)
 
-            body_text = await _extract_element_text(page, 'div[role="document"]', timeout=5000)
+            body_text = await _extract_element_text(
+                page, 'div[role="document"]', timeout=5000, allow_ocr=True
+            )
             if not body_text:
-                body_text = await _extract_element_text(page, '[aria-label*="Message body"]', timeout=4000)
-            if not body_text:
-                handle = await page.query_selector('div[role="document"]')
-                if handle:
-                    body_text = await _ocr_element_text(handle)
-            if not body_text:
-                handle = await page.query_selector('[aria-label*="Message body"]')
-                if handle:
-                    body_text = await _ocr_element_text(handle)
+                body_text = await _extract_element_text(
+                    page, '[aria-label*="Message body"]', timeout=4000, allow_ocr=True
+                )
 
         if deep_read:
             try:
