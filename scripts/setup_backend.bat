@@ -150,32 +150,26 @@ if errorlevel 1 (
 )
 echo [OK] Playwright browsers installed successfully.
 echo.
-
-REM ========================================================================
-REM [STEP 5] Verify Chrome Installation
-REM ========================================================================
-
-echo [5/7] Verifying Chrome browser...
-echo.
-
+REM Verify Chrome installation is available
 where chrome >nul 2>&1
 if errorlevel 1 (
-    REM Check default installation paths
-    if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
-        echo [OK] Chrome found at: C:\Program Files\Google\Chrome\Application\chrome.exe
-    ) else if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
-        echo [OK] Chrome found at: C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
+    REM Chrome not in PATH, check common install locations
+    if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (
+        echo [OK] Chrome found at %ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe
+    ) else if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" (
+        echo [OK] Chrome found at %ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe
     ) else (
         echo [WARNING] Chrome not found. Extension testing will be limited.
         echo [WARNING] Install from: https://www.google.com/chrome/
     )
 ) else (
     echo [OK] Chrome found in PATH.
-)
-echo.
-
-REM ========================================================================
-REM [STEP 6] Check and Start Ollama Server
+)    REM Check default installation paths
+    if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
+        echo [OK] Chrome found at: C:\Program Files\Google\Chrome\Application\chrome.exe
+    ) else if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
+        echo [OK] Chrome found at: C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
+    [STEP 6] Check and Start Ollama Server
 REM ========================================================================
 
 echo [6/7] Checking Ollama AI server...
