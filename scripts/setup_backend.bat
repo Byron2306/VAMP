@@ -9,8 +9,7 @@ REM  - Python 3.10+ verification and setup
 REM  - Virtual environment creation
 REM  - All pip dependencies installation
 REM  - Playwright browser binaries installation
-REM  - Chrome & Ollama detection
-REM  - Ollama server health check and auto-launch
+
 REM  - REST API + WebSocket bridge startup
 REM  - Dashboard auto-open
 REM  - Full error handling and recovery
@@ -256,7 +255,6 @@ echo.
 echo [OK] All services are running:
 echo   - REST API: http://localhost:8000/api/*
 echo   - WebSocket Bridge: ws://localhost:8000
-echo   - Ollama AI: http://127.0.0.1:11434 (if available)
 echo.
 echo [INFO] Next steps:
 echo   1. Open your browser and navigate to: http://localhost:8000/dashboard
