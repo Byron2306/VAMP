@@ -159,15 +159,6 @@ if errorlevel 1 (
     ) else if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" (
         echo [OK] Chrome found at %ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe
     ) else (
-        echo [WARNING] Chrome not found. Extension testing will be limited.
-        echo [WARNING] Install from: https://www.google.com/chrome/
-    )
-) else (
-    echo [OK] Chrome found in PATH.
-)    REM Check default installation paths
-    if exist "C:\Program Files\Google\Chrome\Application\chrome.exe" (
-        echo [OK] Chrome found at: C:\Program Files\Google\Chrome\Application\chrome.exe
-    ) else if exist "C:\Program Files (x86)\Google\Chrome\Application\chrome.exe" (
         echo [OK] Chrome found at: C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
     [STEP 6] Check and Start Ollama Server
 REM ========================================================================
