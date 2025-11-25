@@ -15,4 +15,5 @@ __all__ = [
     "evidence_classifier",
     "evidence_router",
     "learning_engine",
+    "autonomous_agent_service",
 ]
