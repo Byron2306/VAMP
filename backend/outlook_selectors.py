@@ -4,26 +4,45 @@ from __future__ import annotations
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 _BASE_DIR = Path(__file__).resolve().parent
 _SHARED_JSON = _BASE_DIR.parent / "frontend" / "extension" / "shared" / "outlook_selectors.json"
 
-_DEFAULT_SELECTORS: List[str] = [
-    "[data-convid]",
-    "[data-conversation-id]",
-    "[data-conversationid]",
-    "[data-item-id]",
-    "[role=\"listitem\"][data-convid]",
-    "[role=\"listitem\"][data-conversation-id]",
-    "[role=\"listitem\"][data-item-id]",
-    "[aria-label*=\"Message list\"] [role=\"listitem\"]",
-    "[data-automation-id=\"messageList\"] [role=\"option\"]",
-    "[data-tid=\"messageListContainer\"] [role=\"option\"]",
-    "[data-app-section=\"Mail\"] [role=\"treeitem\"]",
-    "[role=\"option\"][data-convid]",
-    "[role=\"option\"][data-item-id]",
+OUTLOOK_SELECTOR_SETS: Dict[str, Dict[str, str]] = {
+    "v2024_q4": {
+        "message_list": '[data-test-id="message-list"]',
+        "message_row": '[role="listitem"][data-convid]',
+        "subject": '[data-test-id="message-subject"]',
+    },
+    "v2024_q3": {
+        "message_list": ".ms-List",
+        "message_row": ".ms-ListItem",
+        "subject": ".ms-ListItem-primaryText",
+    },
+}
+
+OUTLOOK_ROW_FALLBACKS: List[str] = [
+    OUTLOOK_SELECTOR_SETS["v2024_q4"]["message_row"],
+    OUTLOOK_SELECTOR_SETS["v2024_q3"]["message_row"],
+    "div[role=\"listitem\"]",
 ]
+
+_DEFAULT_SELECTORS: List[str] = list(dict.fromkeys(
+    OUTLOOK_ROW_FALLBACKS
+    + [
+        "[data-convid]",
+        "[data-conversation-id]",
+        "[data-conversationid]",
+        "[data-item-id]",
+        "[aria-label*=\"Message list\"] [role=\"listitem\"]",
+        "[data-automation-id=\"messageList\"] [role=\"option\"]",
+        "[data-tid=\"messageListContainer\"] [role=\"option\"]",
+        "[data-app-section=\"Mail\"] [role=\"treeitem\"]",
+        "[role=\"option\"][data-convid]",
+        "[role=\"option\"][data-item-id]",
+    ]
+))
 
 
 @lru_cache(maxsize=1)
@@ -33,7 +52,9 @@ def load_outlook_selectors() -> List[str]:
     The selectors are stored in a JSON file that is bundled with both the
     browser extension and the backend so that changes stay in lockstep.  The
     JSON is cached to avoid repeatedly touching the filesystem during long
-    scraping sessions.
+    scraping sessions.  If the JSON is unavailable, we fall back to a
+    versioned selector matrix that prioritizes the latest Outlook UI updates
+    while keeping legacy selectors for older layouts.
     """
 
     try:
@@ -55,4 +76,9 @@ def load_outlook_selectors() -> List[str]:
 # available for tests.
 OUTLOOK_ROW_SELECTORS: List[str] = load_outlook_selectors()
 
-__all__ = ["OUTLOOK_ROW_SELECTORS", "load_outlook_selectors"]
+__all__ = [
+    "OUTLOOK_ROW_SELECTORS",
+    "OUTLOOK_ROW_FALLBACKS",
+    "OUTLOOK_SELECTOR_SETS",
+    "load_outlook_selectors",
+]
