@@ -7,37 +7,82 @@
   </head>
   <body>
     <header>
-      <h1>VAMP Agent Control Center</h1>
-      <button id="refresh">Refresh</button>
+      <div>
+        <p class="eyebrow">Control Center</p>
+        <h1>VAMP Agent</h1>
+        <p class="subtitle">Lightweight status cockpit for backend, bridge, and REST API.</p>
+      </div>
+      <div class="api-config">
+        <label for="api-root">API base URL</label>
+        <div class="api-row">
+          <input id="api-root" type="url" spellcheck="false" />
+          <button id="save-api" aria-label="Save API base URL">Save</button>
+        </div>
+        <small class="muted">Updates local storage only. Default: http://localhost:8080/api</small>
+      </div>
+      <button id="refresh" class="ghost">↻ Refresh</button>
     </header>
+
     <main>
-      <section>
-        <h2>Health</h2>
-        <pre id="health">Loading…</pre>
-      </section>
-      <section>
-        <h2>Session State</h2>
-        <div class="session-refresh">
-          <label>
-            Service
+      <section class="grid stats" aria-label="System snapshot">
+        <article class="card">
+          <div class="card-header">
+            <h2>Health</h2>
+            <span id="health-status" class="chip">—</span>
+          </div>
+          <p id="health-summary" class="muted">Waiting for first refresh…</p>
+          <small id="health-updated" class="muted"></small>
+        </article>
+        <article class="card">
+          <div class="card-header">
+            <h2>Sessions</h2>
+            <span class="chip secondary">browser</span>
+          </div>
+          <p class="key-value"><span>Active</span><strong id="sessions-count">0</strong></p>
+          <div class="row">
+            <label for="session-service">Service</label>
             <select id="session-service">
               <option value="outlook">outlook</option>
               <option value="onedrive">onedrive</option>
               <option value="drive">drive</option>
               <option value="efundi">efundi</option>
             </select>
-          </label>
-          <label>
-            Identity (email, optional)
-            <input id="session-identity" type="text" placeholder="user@example.com" />
-          </label>
+          </div>
+          <div class="row">
+            <label for="session-identity">Identity (email, optional)</label>
+            <input id="session-identity" type="email" placeholder="user@example.com" />
+          </div>
           <button id="refresh-session">Refresh browser session state</button>
-        </div>
-        <pre id="auth">Loading…</pre>
+        </article>
+        <article class="card">
+          <div class="card-header">
+            <h2>Connectors</h2>
+            <span class="chip success" id="connectors-enabled">—</span>
+          </div>
+          <p class="muted" id="connectors-summary">Loading…</p>
+          <div class="tiny-actions">
+            <button id="check-updates" class="ghost">Check updates</button>
+            <button id="apply-update" class="ghost">Apply</button>
+          </div>
+          <small class="muted" id="updates-summary"></small>
+        </article>
+        <article class="card">
+          <div class="card-header">
+            <h2>AI Diagnostics</h2>
+            <span class="chip secondary">Ollama</span>
+          </div>
+          <p class="muted">Confirm the bridge can reach the AI backend.</p>
+          <button id="test-ai">Run probe</button>
+          <small class="muted" id="ai-status">Waiting…</small>
+        </article>
       </section>
-      <section>
-        <h2>Connectors</h2>
-        <table id="connectors">
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Connector control</h2>
+          <p class="muted">Toggle connectors and force reloads. Changes persist on the backend.</p>
+        </div>
+        <table id="connectors" aria-label="Connector list">
           <thead>
             <tr>
               <th>Name</th>
@@ -49,26 +94,47 @@
           <tbody></tbody>
         </table>
       </section>
-      <section>
-        <h2>Evidence Vault</h2>
-        <pre id="evidence">Loading…</pre>
-      </section>
-      <section>
-        <h2>AI Diagnostics</h2>
-        <div class="updates">
-          <button id="test-ai">Test AI</button>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Evidence vault</h2>
+          <p class="muted">Recent items captured by the Playwright bridge.</p>
         </div>
-        <pre id="ai-status">Click "Test AI" to probe the Ollama backend…</pre>
-      </section>
-      <section>
-        <h2>Updates</h2>
-        <div class="updates">
-          <pre id="updates">Loading…</pre>
-          <button id="check-updates">Check</button>
-          <button id="apply-update">Apply</button>
+        <div class="evidence">
+          <p class="key-value"><span>Total items</span><strong id="evidence-count">0</strong></p>
+          <p class="key-value"><span>Last capture</span><strong id="evidence-latest">—</strong></p>
         </div>
+      </section>
+
+      <section class="card">
+        <details open>
+          <summary>Advanced diagnostics</summary>
+          <div class="diagnostics-grid">
+            <div>
+              <h3>Health payload</h3>
+              <pre id="health-raw">Loading…</pre>
+            </div>
+            <div>
+              <h3>Auth sessions</h3>
+              <pre id="auth-raw">Loading…</pre>
+            </div>
+            <div>
+              <h3>Evidence</h3>
+              <pre id="evidence-raw">Loading…</pre>
+            </div>
+            <div>
+              <h3>Updates</h3>
+              <pre id="updates-raw">Loading…</pre>
+            </div>
+            <div>
+              <h3>AI probe</h3>
+              <pre id="ai-raw">Click "Run probe"…</pre>
+            </div>
+          </div>
+        </details>
       </section>
     </main>
+
     <script src="app.js" type="module"></script>
   </body>
 </html>

@@ -1,6 +1,5 @@
 """Unified agent-as-app server exposing REST + websocket endpoints."""
 from __future__ import annotations
-import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -10,8 +9,9 @@ from .agent_app.ai_probe import ai_runtime_probe
 from .agent_app.api import api
 from .agent_app.app_state import agent_state
 from .agent_app.ws_dispatcher import WSActionDispatcher
+from .logging_utils import configure_quiet_logger
 
-logger = logging.getLogger(__name__)
+logger = configure_quiet_logger(__name__, default_console_level="ERROR", file_name="agent_app.log")
 
 def create_app() -> tuple:
     # Calculate path to dashboard folder
@@ -27,8 +27,8 @@ def create_app() -> tuple:
         async_mode='threading',  # Use threading for compatibility
         ping_timeout=60,  # Increase timeout to 60 seconds
         ping_interval=25,  # Send ping every 25 seconds
-        logger=True,
-        engineio_logger=True
+        logger=False,
+        engineio_logger=False,
     )
     
     # Register API blueprint
@@ -78,7 +78,6 @@ def create_app() -> tuple:
     return app, socketio
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO)
     app, socketio = create_app()
     
     # Get host configuration - default to localhost for extension compatibility
