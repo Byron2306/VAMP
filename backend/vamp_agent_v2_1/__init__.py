@@ -12,4 +12,6 @@ __all__ = [
     "performance_monitor",
     "background_scheduler",
     "config_loader",
+    "evidence_classifier",
+    "evidence_router",
 ]
