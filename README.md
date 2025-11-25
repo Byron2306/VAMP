@@ -50,7 +50,6 @@ VAMP/
 │   ├── platform_plugins/      # Built-in connector implementations
 │   ├── nwu_brain/             # NWU scorer implementation
 │   ├── app_server.py
-│   ├── ollama_client.py
 │   ├── vamp_agent.py
 │   ├── vamp_master.py
 │   ├── vamp_runner.py
@@ -79,7 +78,6 @@ VAMP/
 - 🧱 Modular plugin design: connectors can be enabled/disabled or reconfigured live from the agent dashboard
 - 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
 - 🔄 Self-update checks and rollback orchestration managed by the agent
-- 🤖 Ollama-driven orchestration can trigger live VAMP scans directly from chat questions
 
 ---
 
@@ -165,7 +163,7 @@ Optional safety toggle:
   `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run
   the dashboard read-only without triggering scans.
 
-> `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. The default configuration assumes the local Ollama runtime, so no API keys are required.
+re required.
 
 ### Session-state first login and refresh
 
