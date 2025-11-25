@@ -24,6 +24,7 @@ except ImportError:  # Compatibility for older deployments
     from websockets.legacy.server import WebSocketServerProtocol  # type: ignore
 
 from . import STORE_DIR
+from .logging_utils import configure_quiet_logger, record_feedback_tag
 from .vamp_store import VampStore, _uid
 
 # --- Import agent ---
@@ -39,11 +40,13 @@ APP_PORT = int(os.environ.get("APP_PORT", "8765"))
 STORE_DIR.mkdir(parents=True, exist_ok=True)
 store = VampStore(str(STORE_DIR))
 
-logging.basicConfig(
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+# Default to quiet output unless explicitly overridden.
+logger = configure_quiet_logger(
+    "vamp.ws",
+    env_level_var="VAMP_WS_LOG_LEVEL",
+    default_console_level="ERROR",
+    file_name="ws_bridge.log",
 )
-logger = logging.getLogger("vamp.ws")
 
 try:
     from .ollama_client import ask_ollama, analyze_feedback_with_ollama
@@ -605,8 +608,14 @@ async def on_scan_active(ws: WebSocketServerProtocol, msg: Dict[str, Any]) -> No
     except websockets.exceptions.ConnectionClosed:
         logger.info("Scan halted — client disconnected during send")
     except Exception as e:
-        tb = traceback.format_exc()
-        logger.error(f"Scan failed: {tb}")
+        logger.error("Scan failed: %s", e)
+        logger.debug("Scan traceback", exc_info=True)
+        record_feedback_tag(
+            "scan_failed",
+            str(e),
+            severity="error",
+            context={"uid": uid, "year": year, "month": month, "url": url},
+        )
         await _safe_send(ws, fail("SCAN_ACTIVE", str(e)), "SCAN_ACTIVE")
 
 

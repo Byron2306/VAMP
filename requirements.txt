@@ -2,6 +2,7 @@ flask
 websocket-client
 requests
 pandas
+openpyxl
 playwright
 websockets
 pillow
