@@ -10,6 +10,7 @@ from .agent_app.api import api
 from .agent_app.app_state import agent_state
 from .agent_app.ws_dispatcher import WSActionDispatcher
 from .logging_utils import configure_quiet_logger
+from .settings import VAMP_AGENT_ENABLED
 
 logger = configure_quiet_logger(__name__, default_console_level="ERROR", file_name="agent_app.log")
 
@@ -35,6 +36,10 @@ def create_app() -> tuple:
     app.register_blueprint(api)
 
     dispatcher = WSActionDispatcher(socketio)
+    if not VAMP_AGENT_ENABLED:
+        logger.warning(
+            "VAMP_AGENT_ENABLED=0 — agent bridge initialised in read-only mode; enable the flag to run scans."
+        )
     
     # Serve static dashboard files
     @app.get("/")

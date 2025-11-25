@@ -159,6 +159,12 @@ $env:OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
 $env:OLLAMA_MODEL   = "gemma3:4b-b"
 ```
 
+Optional safety toggle:
+
+- `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to
+  `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run
+  the dashboard read-only without triggering scans.
+
 > `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. The default configuration assumes the local Ollama runtime, so no API keys are required.
 
 ### Session-state first login and refresh

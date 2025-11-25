@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Iterator, Optional
 from flask import Blueprint, Response, jsonify, request
 
 from ..ollama_client import describe_ai_backend
+from ..settings import VAMP_AGENT_ENABLED
 from .ai_probe import ai_runtime_probe
 from .app_state import AgentAppState, agent_state
 from .plugin_manager import PluginDefinition
@@ -304,6 +305,9 @@ def scan_active() -> Dict[str, object]:
     year = payload.get("year")
     month = payload.get("month")
     deep_read = payload.get("deep_read", True)
+
+    if not VAMP_AGENT_ENABLED:
+        return {"status": "error", "error": "VAMP agent disabled (set VAMP_AGENT_ENABLED=1 to enable)"}, 503
 
     if not url:
         return {"status": "error", "error": "Missing 'url' in request body."}, 400
