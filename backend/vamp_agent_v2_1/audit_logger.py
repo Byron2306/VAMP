@@ -6,6 +6,7 @@ iterations will implement log rotation, hashing, and persistence rules.
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -50,6 +51,33 @@ class AuditLogger:
 
         for message in messages:
             self.log(message)
+
+    def log_classification(self, evidence_id: str, result: dict) -> None:
+        """Persist a structured classification result."""
+
+        if not self.enabled:
+            return
+
+        entry = {"type": "classification", "evidence_id": evidence_id, "result": result}
+        self._append_json(entry)
+
+    def log_routing(self, evidence_id: str, destination: str, reason: Optional[str] = None) -> None:
+        """Persist routing actions with optional reason metadata."""
+
+        if not self.enabled:
+            return
+
+        entry = {
+            "type": "routing",
+            "evidence_id": evidence_id,
+            "destination": destination,
+            "reason": reason,
+        }
+        self._append_json(entry)
+
+    def _append_json(self, payload: dict) -> None:
+        with self.log_path.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(payload) + "\n")
 
     def _format_entry(self, message: str, context: Optional[dict] = None) -> str:
         """Return a formatted log line for persistence.
