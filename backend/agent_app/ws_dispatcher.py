@@ -643,6 +643,10 @@ class WSActionDispatcher:
                 f"The month now tracks {total} total artefacts."
             )
 
+            for item in results:
+                if isinstance(item, dict):
+                    submit_evidence_from_vamp({**item, "source": item.get("source") or "scan_active"})
+
             session.ok(
                 "SCAN_ACTIVE/COMPLETE",
                 {

@@ -72,6 +72,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from . import BRAIN_DATA_DIR
 from .agent_app.app_state import agent_state
+from .vamp_agent_bridge import submit_evidence_from_vamp
 from .nwu_brain.scoring import NWUScorer
 
 # -------------------------
@@ -444,6 +445,20 @@ def scan_and_score(evidence_root: Path,
             )
         except Exception as exc:  # pragma: no cover - non-critical path
             say(f"Warning: failed to persist evidence to vault: {exc}")
+
+        submit_evidence_from_vamp(
+            {
+                "path": art.path,
+                "evidence_id": out_row.get("hash") or art.sha1,
+                "text": full_text,
+                "kpa": out_row.get("kpa", []),
+                "score": out_row.get("score", 0.0),
+                "metadata": {
+                    "source": "vamp_master",
+                    "relpath": out_row.get("relpath"),
+                },
+            }
+        )
 
     out_dir = ensure_dir(evidence_root / out_dirname)
     audit_csv = out_dir / "audit.csv"
