@@ -84,6 +84,7 @@ VAMP/
 - Python 3.10+
 - Chrome installed (uses your live profile)
 - `Playwright` + browser dependencies installed
+- Optional: selective content-handling extras (OCR, archive inspection, MIME sniffing). See [`docs/connector_reliability.md`](docs/connector_reliability.md) for a minimal, install-as-needed list.
 
 ### 2. 🛠 Install Requirements
 
@@ -91,6 +92,8 @@ VAMP/
 pip install -r requirements.txt
 playwright install
 ```
+
+If you need broader content handling (OCR, archives, Office docs) without bloating the default install, cherry-pick the packages listed in [`docs/connector_reliability.md`](docs/connector_reliability.md) rather than installing everything by default.
 
 ### 3. ▶️ Start the unified agent server
 
