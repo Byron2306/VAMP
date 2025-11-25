@@ -11,6 +11,12 @@ The **VAMP Agent** is a stealthy, browser-based deep content analysis tool that 
 
 It uses **Playwright** for authenticated browser automation, **NWU Brain** for scoring extracted evidence, and a **WebSocket bridge** for frontend-extension integration.
 
+> ⚠️ Platform automation notice: Use this project only where you have explicit permission
+> to automate logins, scraping, or metadata extraction. Review each platform's terms of
+> service and anti-automation policies (Outlook/Office365, OneDrive, Google Drive,
+> NextCloud, eFundi) before running connectors, and add any required trademark or usage
+> notices when demonstrating the tool.
+
 ---
 
 ## 🏗 System Architecture
@@ -74,6 +80,19 @@ VAMP/
 - 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
 - 🔄 Self-update checks and rollback orchestration managed by the agent
 - 🤖 Ollama-driven orchestration can trigger live VAMP scans directly from chat questions
+
+---
+
+## ✅ Data handling and prompt safety
+
+- Keep the NWU Brain corpus (policy text, clause packs, routing manifests) within approved
+  NWU environments. Do **not** forward the raw corpus to third-party AI endpoints or
+  logging providers without explicit approval and a data-sharing agreement.
+- When inspecting prompts or debugging AI calls, redact policy text in logs. The backend
+  already sends only canonical, scored fields to the assistant; avoid additional logging
+  of full prompts.
+- Refer to `backend/data/nwu_brain/PROVENANCE.md` to confirm ownership/permission for each
+  knowledge asset before redistribution.
 
 ---
 
