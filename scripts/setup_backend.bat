@@ -19,7 +19,7 @@ REM ============================================================================
 REM Colors for console output (Windows 10+)
 for /F %%A in ('echo prompt $H ^| cmd') do set "BS=%%A"
 
-set "REPO_ROOT=%CD%.."
+set "REPO_ROOT=%~dp0.."
 set "SCRIPTS_DIR=%CD%"
 set "VENV_PATH=%REPO_ROOT%\.venv"
 set "PYTHON_VENV=%VENV_PATH%\Scripts\python.exe"
