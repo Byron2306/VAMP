@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from flask_socketio import SocketIO
 
 from .. import STORE_DIR
+from ..vamp_agent_bridge import submit_evidence_from_vamp
 try:  # pragma: no cover - optional dependency during tests
     from ..ollama_client import analyze_feedback_with_ollama, ask_ollama
 except Exception:  # pragma: no cover - fallback when Ollama client unavailable
@@ -557,6 +558,10 @@ class WSActionDispatcher:
                 f"Manual fallback added {added} new evidence items. "
                 f"The month now tracks {total} total artefacts."
             )
+
+            for item in results:
+                if isinstance(item, dict):
+                    submit_evidence_from_vamp({**item, "source": item.get("source") or "scan_active"})
 
             session.ok(
                 "SCAN_ACTIVE/COMPLETE",
