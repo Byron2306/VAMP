@@ -10,9 +10,10 @@ import os
 import re
 import threading
 import traceback
+import time
 from functools import partial
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Tuple
 
 from flask_socketio import SocketIO
 
@@ -30,6 +31,8 @@ except Exception:  # pragma: no cover - degrade gracefully when agent missing
 from ..vamp_store import VampStore, _uid
 from .ai_probe import ai_runtime_probe
 from .app_state import agent_state
+from ..vamp_agent_v2_1.performance_monitor import PerformanceMonitor
+from ..vamp_agent_v2_1.self_aware_state import SelfAwareState
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +234,67 @@ class _SessionEmitter:
         self._socketio.emit("response", _fail(action, error), to=self._sid)
 
 
+class _AgentEventBridge:
+    """Optional bridge that emits agent events to websocket clients."""
+
+    def __init__(self, socketio: SocketIO, *, enabled: bool, interval_seconds: float = 15.0) -> None:
+        self.enabled = enabled
+        self._socketio = socketio
+        self._health_interval = max(1.0, interval_seconds)
+        self._state = SelfAwareState()
+        self._performance = PerformanceMonitor()
+        self._health_task_started = False
+        if self.enabled:
+            self._start_health_loop()
+
+    def _start_health_loop(self) -> None:
+        if self._health_task_started:
+            return
+        self._health_task_started = True
+
+        def _loop() -> None:
+            while self.enabled:
+                try:
+                    self.emit_health()
+                except Exception:  # pragma: no cover - background observability must not break the app
+                    logger.debug("agent_health emission failed", exc_info=True)
+                time.sleep(self._health_interval)
+
+        self._socketio.start_background_task(_loop)
+
+    def emit_health(self) -> None:
+        if not self.enabled:
+            return
+        payload = {
+            "ts": time.time(),
+            "state": self._state.snapshot(),
+            "performance": self._performance.snapshot(),
+        }
+        self._socketio.emit("agent_health", payload)
+
+    def record_evidence_routed(self, evidence: Iterable[Dict[str, Any]]) -> None:
+        if not self.enabled:
+            return
+
+        items = [self._summarize_evidence(item) for item in evidence if isinstance(item, dict)]
+        if not items:
+            return
+
+        self._state.increment("director_queue_depth", len(items))
+        payload = {"ts": time.time(), "count": len(items), "items": items}
+        self._socketio.emit("agent_evidence_routed", payload)
+
+    def _summarize_evidence(self, evidence: Dict[str, Any]) -> Dict[str, Any]:
+        evidence_id = evidence.get("evidence_id") or evidence.get("id") or evidence.get("uid")
+        title = evidence.get("title") or evidence.get("subject") or evidence.get("name")
+        return {
+            "evidence_id": str(evidence_id or title or evidence.get("path") or "unknown"),
+            "title": title,
+            "platform": evidence.get("platform") or evidence.get("source"),
+            "modality": evidence.get("modality"),
+        }
+
+
 class WSActionDispatcher:
     """Dispatch incoming Socket.IO ``message`` payloads to agent actions."""
 
@@ -244,6 +308,13 @@ class WSActionDispatcher:
             self._store = store
         self._lock = threading.Lock()
         self._sessions: Dict[str, Dict[str, Any]] = {}
+        self._agent_enabled = (os.getenv("VAMP_AGENT_ENABLED", "0") or "0").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        self._agent_bridge = _AgentEventBridge(self._socketio, enabled=self._agent_enabled)
 
     # ------------------------------------------------------------------
     def forget_session(self, sid: str) -> None:
@@ -473,6 +544,7 @@ class WSActionDispatcher:
                     store=self._store,
                     progress_cb=on_progress,
                     purpose="scan",
+                    agent_bridge=self._agent_bridge,
                 )
         except Exception as exc:  # pragma: no cover - defensive fallback
             logger.warning("AI orchestrated scan failed: %s", exc)
@@ -536,6 +608,7 @@ class WSActionDispatcher:
             )
 
             results = results or []
+            self._agent_bridge.record_evidence_routed(results)
             if not results:
                 await on_progress(100.0, "Scan complete — no new items")
                 session.ok(
@@ -635,6 +708,7 @@ class WSActionDispatcher:
                 store=self._store,
                 progress_cb=forward_progress if is_brain_scan else None,
                 purpose="scan" if is_brain_scan else "ask",
+                agent_bridge=self._agent_bridge,
             )
         except Exception as exc:
             logger.warning("orchestration failed: %s", exc)
@@ -752,6 +826,7 @@ async def _execute_action(
     uid: str,
     *,
     progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
+    agent_bridge: Optional[_AgentEventBridge] = None,
 ) -> Dict[str, Any]:
     """Execute an orchestrator action and return an observation dict."""
 
@@ -820,6 +895,8 @@ async def _execute_action(
         return observation
 
     results = results or []
+    if agent_bridge:
+        agent_bridge.record_evidence_routed(results)
 
     try:
         month_doc = dispatcher_store.add_items(email or uid, year, month, results)
@@ -866,6 +943,7 @@ async def _orchestrate_answer(
     store: VampStore,
     progress_cb: Optional[Callable[[float, str], Awaitable[None]]] = None,
     purpose: str = "ask",
+    agent_bridge: Optional[_AgentEventBridge] = None,
 ) -> Dict[str, Any]:
     """Drive an LLM loop that can invoke connectors before producing an answer."""
 
@@ -1005,6 +1083,7 @@ async def _orchestrate_answer(
                 msg,
                 uid,
                 progress_cb=progress_cb,
+                agent_bridge=agent_bridge,
             )
             tool_summaries.append(observation)
             history.append(("tool", json.dumps(observation, ensure_ascii=False)))
