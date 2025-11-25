@@ -1,0 +1,12 @@
+VAMP Agent
+Copyright (c) 2024 North-West University Research and Policy Development
+
+Internal Use Only.
+This software is provided solely for use within North-West University. No permission is
+granted to distribute, sublicense, or use the software outside the institution without
+prior written consent. All trademarks referenced (e.g., Microsoft Outlook/Office365,
+Google Drive, OneDrive, NextCloud, eFundi) remain the property of their respective
+owners.
+
+Third-party dependencies remain subject to their respective licenses. See
+`docs/dependency_license_scan.md` for the current review snapshot.
