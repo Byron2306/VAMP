@@ -9,7 +9,6 @@ fails.
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import threading
 import uuid
@@ -17,6 +16,7 @@ from pathlib import Path
 from typing import Mapping, MutableMapping, Optional
 
 from . import DATA_DIR
+from .settings import VAMP_AGENT_ENABLED
 from .vamp_agent_v2_1.autonomous_agent_service import AutonomousAgentService
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,6 @@ DIRECTOR_QUEUE_DIR = BRIDGE_ROOT / "director_queue"
 DUMP_DIR = BRIDGE_ROOT / "dumps"
 SPOOL_DIR = BRIDGE_ROOT / "ingest_queue"
 
-_DISABLED = os.getenv("VAMP_AGENT_DISABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 _LOCK = threading.Lock()
 _SERVICE: Optional[AutonomousAgentService] = None
 _WORKER: Optional[threading.Thread] = None
@@ -40,7 +39,7 @@ def _ensure_directories() -> None:
 
 def _start_service() -> Optional[AutonomousAgentService]:
     global _SERVICE
-    if _DISABLED:
+    if not VAMP_AGENT_ENABLED:
         return None
 
     with _LOCK:
@@ -124,6 +123,8 @@ def _normalize_payload(raw: Mapping[str, object]) -> MutableMapping[str, object]
 def submit_evidence_from_vamp(evidence: Mapping[str, object]) -> None:
     """Queue evidence for the autonomous agent without altering callers."""
 
+    if not VAMP_AGENT_ENABLED:
+        return
     service = _start_service()
     if not service:
         return
@@ -138,6 +139,8 @@ def submit_evidence_from_vamp(evidence: Mapping[str, object]) -> None:
 def submit_director_feedback(feedback: Mapping[str, object]) -> None:
     """Queue director feedback for the autonomous agent if available."""
 
+    if not VAMP_AGENT_ENABLED:
+        return
     service = _start_service()
     if not service:
         return
