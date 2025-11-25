@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from flask_socketio import SocketIO
 
 from .. import STORE_DIR
+from ..settings import VAMP_AGENT_ENABLED
 try:  # pragma: no cover - optional dependency during tests
     from ..ollama_client import analyze_feedback_with_ollama, ask_ollama
 except Exception:  # pragma: no cover - fallback when Ollama client unavailable
@@ -406,6 +407,14 @@ class WSActionDispatcher:
         session.ok("COMPILE_YEAR", {"path": str(path)})
 
     def _handle_scan_active(self, sid: str, msg: Dict[str, Any]) -> None:
+        if not VAMP_AGENT_ENABLED:
+            self._socketio.emit(
+                "response",
+                _fail("SCAN_ACTIVE", "VAMP agent disabled (set VAMP_AGENT_ENABLED=1 to enable)"),
+                to=sid,
+            )
+            return
+
         if run_scan_active_ws is None:
             self._socketio.emit("response", _fail("SCAN_ACTIVE", "vamp_agent not available"), to=sid)
             return
@@ -429,6 +438,9 @@ class WSActionDispatcher:
     # ------------------------------------------------------------------
     async def _run_scan_active(self, sid: str, msg: Dict[str, Any]) -> None:
         session = _SessionEmitter(self._socketio, sid)
+        if not VAMP_AGENT_ENABLED:
+            session.fail("SCAN_ACTIVE", "VAMP agent disabled (enable VAMP_AGENT_ENABLED to run scans)")
+            return
         email_raw, uid = self._resolve_user(sid, msg)
         email = (email_raw or "").strip().lower() or uid
         year = self._resolve_year(sid, msg)
@@ -626,6 +638,17 @@ class WSActionDispatcher:
             return
 
         if is_brain_scan:
+            if not VAMP_AGENT_ENABLED:
+                session.fail("SCAN_ACTIVE", "VAMP agent disabled (enable VAMP_AGENT_ENABLED to run scans)")
+                session.ok(
+                    "ASK",
+                    {
+                        "answer": _basic_text_reply(question, role="VAMP AI"),
+                        "mode": mode,
+                        "tools": [],
+                    },
+                )
+                return
             session.ok("SCAN_ACTIVE/STARTED")
 
         try:
@@ -768,6 +791,10 @@ async def _execute_action(
 
     if not name:
         observation["error"] = "Tool name missing"
+        return observation
+
+    if not VAMP_AGENT_ENABLED:
+        observation["error"] = "VAMP agent disabled (enable VAMP_AGENT_ENABLED to run tools)"
         return observation
 
     if name != "scan_active":
