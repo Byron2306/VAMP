@@ -14,4 +14,5 @@ __all__ = [
     "config_loader",
     "evidence_classifier",
     "evidence_router",
+    "learning_engine",
 ]
