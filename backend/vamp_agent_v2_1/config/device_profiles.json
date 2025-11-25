@@ -1,0 +1,17 @@
+{
+  "workstation": {
+    "max_cpu_percent": 85,
+    "max_memory_percent": 80,
+    "batch_size": 50
+  },
+  "laptop": {
+    "max_cpu_percent": 70,
+    "max_memory_percent": 70,
+    "batch_size": 25
+  },
+  "low_power": {
+    "max_cpu_percent": 50,
+    "max_memory_percent": 60,
+    "batch_size": 10
+  }
+}
