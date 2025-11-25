@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, Iterator, Optional
 
 from flask import Blueprint, Response, jsonify, request
 
-from ..ollama_client import describe_ai_backend
 from ..settings import VAMP_AGENT_ENABLED
 from .ai_probe import ai_runtime_probe
 from .app_state import AgentAppState, agent_state
@@ -51,8 +50,7 @@ def get_health() -> Dict[str, object]:
 def ai_status() -> Dict[str, object]:
     return {
         "runtime": ai_runtime_probe.snapshot(),
-        "backend": describe_ai_backend(),
-    }
+            }
 
 
 @api.route("/connectors", methods=["GET"])
