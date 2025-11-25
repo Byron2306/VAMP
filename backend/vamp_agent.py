@@ -96,7 +96,7 @@ def _default_browser_args() -> List[str]:
 
 # Enhanced browser configuration for Outlook Office365
 BROWSER_CONFIG = {
-    "headless": os.getenv("VAMP_HEADLESS", "1").strip().lower() not in {"0", "false", "no"},
+    "headless": os.getenv("VAMP_HEADLESS", "0").strip().lower() not in {"0", "false", "no"},
     "slow_mo": 0,
     "args": _default_browser_args(),
 }
@@ -642,14 +642,6 @@ async def _ensure_storage_state(service: Optional[str], state_path: Optional[Pat
     if automated and state_path.exists():
         return
 
-    if not BROWSER_CONFIG.get("headless", True):
-        # Headful mode will allow the user to login during the scan itself.
-        logger.info(
-            "Storage state for %s missing but headless mode is disabled. Login during the scan will be required.",
-            service,
-        )
-        return
-
     if not ALLOW_INTERACTIVE_LOGIN:
         raise RuntimeError(
             f"Storage state for {service} not found at {state_path}. "
@@ -691,6 +683,40 @@ async def _ensure_storage_state(service: Optional[str], state_path: Optional[Pat
             f"Interactive login for {service} did not persist any credentials. "
             "Repeat the login flow and ensure you confirm completion in the terminal."
         )
+
+
+async def refresh_storage_state(service: str, identity: Optional[str] = None) -> Path:
+    """Force a fresh capture of the browser storage state for a service."""
+
+    await ensure_browser()
+    state_path = _state_path_for(service, identity)
+    if not state_path:
+        raise ValueError(f"Unknown service: {service}")
+
+    try:
+        if state_path.exists():
+            state_path.unlink()
+    except OSError:
+        logger.warning("Unable to clear existing storage state at %s", state_path)
+
+    await _ensure_storage_state(service, state_path, identity)
+    return state_path
+
+
+def refresh_storage_state_sync(service: str, identity: Optional[str] = None) -> Path:
+    """Synchronous convenience wrapper around :func:`refresh_storage_state`."""
+
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(refresh_storage_state(service, identity))
+    finally:
+        try:
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            pass
+        asyncio.set_event_loop(None)
+        loop.close()
 
 # --------------------------------------------------------------------------------------
 # Utilities

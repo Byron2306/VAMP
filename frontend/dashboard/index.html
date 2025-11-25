@@ -16,6 +16,26 @@
         <pre id="health">Loading…</pre>
       </section>
       <section>
+        <h2>Session State</h2>
+        <div class="session-refresh">
+          <label>
+            Service
+            <select id="session-service">
+              <option value="outlook">outlook</option>
+              <option value="onedrive">onedrive</option>
+              <option value="drive">drive</option>
+              <option value="efundi">efundi</option>
+            </select>
+          </label>
+          <label>
+            Identity (email, optional)
+            <input id="session-identity" type="text" placeholder="user@example.com" />
+          </label>
+          <button id="refresh-session">Refresh browser session state</button>
+        </div>
+        <pre id="auth">Loading…</pre>
+      </section>
+      <section>
         <h2>Connectors</h2>
         <table id="connectors">
           <thead>
@@ -30,12 +50,15 @@
         </table>
       </section>
       <section>
-        <h2>Authentication Sessions</h2>
-        <pre id="auth">Loading…</pre>
-      </section>
-      <section>
         <h2>Evidence Vault</h2>
         <pre id="evidence">Loading…</pre>
+      </section>
+      <section>
+        <h2>AI Diagnostics</h2>
+        <div class="updates">
+          <button id="test-ai">Test AI</button>
+        </div>
+        <pre id="ai-status">Click "Test AI" to probe the Ollama backend…</pre>
       </section>
       <section>
         <h2>Updates</h2>

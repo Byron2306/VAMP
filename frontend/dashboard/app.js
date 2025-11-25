@@ -44,6 +44,25 @@ async function refresh() {
   }
 }
 
+async function refreshSessionState() {
+  const service = document.getElementById('session-service').value;
+  const identity = document.getElementById('session-identity').value.trim();
+  const payload = { service, identity, notes: 'Dashboard refresh' };
+  await fetchJson('/auth/session/refresh', { method: 'POST', body: JSON.stringify(payload) });
+  await refresh();
+}
+
+async function testAi() {
+  const statusEl = document.getElementById('ai-status');
+  statusEl.textContent = 'Pinging Ollama…';
+  try {
+    const status = await fetchJson('/ai/status');
+    statusEl.textContent = JSON.stringify(status, null, 2);
+  } catch (err) {
+    statusEl.textContent = `Error: ${err.message}`;
+  }
+}
+
 async function updateConnector(name, enabled) {
   await fetchJson(`/connectors/${name}`, {
     method: 'POST',
@@ -64,8 +83,10 @@ async function applyUpdate() {
 
 window.addEventListener('DOMContentLoaded', () => {
   document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('refresh-session').addEventListener('click', refreshSessionState);
   document.getElementById('check-updates').addEventListener('click', checkUpdates);
   document.getElementById('apply-update').addEventListener('click', applyUpdate);
+  document.getElementById('test-ai').addEventListener('click', testAi);
   document.querySelector('#connectors tbody').addEventListener('change', (event) => {
     const checkbox = event.target.closest('input[type="checkbox"]');
     if (!checkbox) return;

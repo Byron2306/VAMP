@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class OneDriveConnector(PlatformConnector):
     name = "onedrive"
     description = "Microsoft OneDrive evidence ingestion"
-    supports_oauth = True
+    supports_oauth = False
 
     def diagnostics(self) -> Dict[str, object]:
         enabled = self.config.get("enabled", True)
@@ -26,7 +26,7 @@ class OneDriveConnector(PlatformConnector):
         }
 
     def required_scopes(self) -> Iterable[str]:
-        return ["offline_access", "Files.Read.All"]
+        return []
 
     def connect(self, **kwargs) -> None:
         logger.debug("OneDrive connector invoked with %s", kwargs)
