@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Type
+from typing import Dict, Iterable, List, Optional, Type
 
 from . import AGENT_CONFIG_DIR
 
@@ -72,6 +72,7 @@ class PluginManager:
             data = {"connectors": []}
         items = data.get("connectors", []) if isinstance(data, dict) else []
         definitions: Dict[str, PluginDefinition] = {}
+        seen_names = set()
         for raw in items:
             try:
                 definition = PluginDefinition(
@@ -84,6 +85,14 @@ class PluginManager:
             except Exception as exc:
                 logger.warning("Invalid connector definition %s: %s", raw, exc)
                 continue
+            if definition.name in seen_names:
+                logger.warning(
+                    "Duplicate connector name '%s' found in %s; keeping the first entry",
+                    definition.name,
+                    self.config_file,
+                )
+                continue
+            seen_names.add(definition.name)
             definitions[definition.name] = definition
         self._definitions = definitions
 
