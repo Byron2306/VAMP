@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import sys
+import tempfile
 import time
 
 import pytest
@@ -335,21 +336,22 @@ def test_auth_session_flow_and_listing():
     app, _ = create_app()
     client = app.test_client()
 
+    state_file = pathlib.Path(tempfile.gettempdir()) / "vamp_test_state.json"
+    state_file.write_text("{}", encoding="utf-8")
+
     payload = {
         "service": "outlook",
         "identity": "agent@test.invalid",
-        "access_token": "token123",
-        "refresh_token": "refresh456",
-        "expires_in": 60,
-        "scopes": ["Mail.Read"],
-        "metadata": {"source": "unit-test"},
+        "state_path": str(state_file),
+        "notes": "unit-test refresh",
     }
 
-    create_resp = client.post('/api/auth/session', json=payload)
+    create_resp = client.post('/api/auth/session/refresh', json=payload)
     assert create_resp.status_code == 200
     session = create_resp.get_json()["session"]
     assert session["service"] == "outlook"
     assert session["identity"] == "agent@test.invalid"
+    assert session["state_path"]
 
     list_resp = client.get('/api/auth/sessions')
     sessions_payload = list_resp.get_json()

@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class GoogleDriveConnector(PlatformConnector):
     name = "drive"
     description = "Google Drive evidence ingestion"
-    supports_oauth = True
+    supports_oauth = False
 
     def diagnostics(self) -> Dict[str, object]:
         return {
@@ -25,7 +25,7 @@ class GoogleDriveConnector(PlatformConnector):
         }
 
     def required_scopes(self) -> Iterable[str]:
-        return ["openid", "https://www.googleapis.com/auth/drive.readonly"]
+        return []
 
     def connect(self, **kwargs) -> None:
         logger.debug("Google Drive connector invoked with %s", kwargs)

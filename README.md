@@ -62,10 +62,10 @@ VAMP/
 
 ## 🚀 Features
 
-- 🔐 Agent-managed auth: OAuth/device-code flows captured, encrypted, audited, and rotated entirely in-app
+- 🔐 Session-state auth: refreshable Playwright storage_state files captured locally (no cloud OAuth flows)
 - 🧠 Full content scraping + keyword scoring
 - 📜 Auto-scroll & deep content extraction
-- 💾 Secrets vaulted at rest, plus durable browser storage states (no leaked env vars)
+- 💾 Durable browser storage states with optional password vault entries for scripted logins
 - 🔍 Works with Google, Microsoft, Sakai platforms
 - 🧰 Integrated with NWU's custom scoring engine
 - 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every Ollama gemma3:4b-b prompt
@@ -102,7 +102,7 @@ The server exposes a REST API on `http://localhost:8080/api/*` that powers:
 
 - `/api/health` – consolidated diagnostics
 - `/api/connectors` – manage platform plugins (enable/disable/update without restarts)
-- `/api/auth/*` – rotate credentials, inspect login history, manage OAuth tokens
+- `/api/auth/*` – refresh Playwright session state, inspect audit trails, and rotate saved passwords
 - `/api/evidence` – browse or purge retained evidence with chain-of-custody logs
 - `/api/updates/*` – self-update checks, apply, and rollback
 
@@ -139,21 +139,25 @@ $env:OLLAMA_MODEL   = "gemma3:4b-b"
 
 > `ollama_client.py` automatically detects Ollama-style endpoints (`/api/chat` or `/api/generate`) and applies the correct payload, headers, and system prompt. The default configuration assumes the local Ollama runtime, so no API keys are required.
 
-### Agent-managed login and credential rotation
+### Session-state first login and refresh
 
-Use the REST API (or call helpers from Python) to seed OAuth/device-code sessions and password vault entries. Examples:
+1. Perform the very first login for each platform manually in a normal, non-headless Chrome window (Playwright will prompt you if a session is missing).
+2. Once authenticated, capture or refresh the storage state with either option:
+
+   - Dashboard: click **"Refresh browser session state"** in the Session State section to trigger `/api/auth/session/refresh`.
+   - CLI: `python scripts/refresh_state.py outlook --identity user@nwu.ac.za`
+
+3. The refreshed `storage_state` JSON is recorded under `backend/data/states/<service>/` and referenced automatically for subsequent scans. No OAuth/cloud tokens are persisted.
+
+If you want the agent to perform a fully automated login (instead of manual capture) you can still seed a username/password in the vault:
 
 ```bash
 curl -X POST http://localhost:8080/api/auth/password \
   -H 'Content-Type: application/json' \
-  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "password": "<secret>"}'
-
-curl -X POST http://localhost:8080/api/auth/session \
-  -H 'Content-Type: application/json' \
-  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "access_token": "<token>", "refresh_token": "<refresh>", "expires_in": 3600}'
+  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "password": "<secret>", "metadata": {"username": "user@nwu.ac.za"}}'
 ```
 
-The agent encrypts and stores credentials in its internal vault (`backend/data/states/agent_app`), rotates keys on demand, and maintains an append-only audit log (`auth.log`). The Playwright automation consumes credentials through the agent runtime—no environment variables or shell history leaks required.
+Audit entries for session refreshes and password updates are written to `agent_app/auth.log` for troubleshooting.
 
 ---
 

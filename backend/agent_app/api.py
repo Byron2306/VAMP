@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any, Callable, Dict, Iterator
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterator, Optional
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -120,26 +121,48 @@ def store_password() -> Dict[str, object]:
     return {"status": "stored"}
 
 
+def _resolve_state_path(payload: Dict[str, object]) -> Optional[Path]:
+    raw_path = payload.get("state_path")
+    if not raw_path:
+        return None
+    path = Path(str(raw_path)).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@api.route("/auth/session/refresh", methods=["POST"])
 @api.route("/auth/session", methods=["POST"])
 @json_response
-def create_session() -> Dict[str, object]:
+def refresh_session_state() -> Dict[str, object]:
     state = agent_state()
     payload = request.get_json(force=True, silent=True) or {}
-    service = str(payload["service"])
+    service = str(payload.get("service", "")).strip()
     identity = str(payload.get("identity", ""))
-    access_token = str(payload.get("access_token", ""))
-    refresh_token = str(payload.get("refresh_token", ""))
-    expires_in = payload.get("expires_in")
-    scopes = payload.get("scopes", [])
-    metadata = dict(payload.get("metadata", {}))
-    session = state.auth_manager.start_session(
+    notes = str(payload.get("notes", "")).strip()
+    provided_path = _resolve_state_path(payload)
+
+    if not service:
+        return {"status": "error", "error": "Missing 'service' in request body."}, 400
+
+    if provided_path is None:
+        from ..vamp_agent import refresh_storage_state_sync
+
+        try:
+            state_path = refresh_storage_state_sync(service, identity or None)
+        except ValueError as exc:
+            return {"status": "error", "error": str(exc)}, 400
+        except Exception as exc:  # pragma: no cover - runtime failures surface to caller
+            return {"status": "error", "error": str(exc)}, 500
+    else:
+        state_path = provided_path
+        if not state_path.exists():
+            state_path.write_text("{}", encoding="utf-8")
+
+    session = state.auth_manager.refresh_session_state(
         service,
         identity,
-        access_token=access_token,
-        refresh_token=refresh_token,
-        expires_in=expires_in,
-        scopes=scopes,
-        metadata=metadata,
+        state_path=state_path,
+        notes=notes or "Storage state refreshed via API",
     )
     return {"session": session.to_dict()}
 
@@ -148,6 +171,14 @@ def create_session() -> Dict[str, object]:
 @json_response
 def delete_session(service: str, identity: str) -> Dict[str, object]:
     state = agent_state()
+    session = state.auth_manager.get_session(service, identity)
+    if session:
+        try:
+            path = Path(session.state_path)
+            if path.exists():
+                path.unlink()
+        except Exception:
+            pass
     state.auth_manager.end_session(service, identity)
     return {"status": "ended"}
 
