@@ -135,10 +135,9 @@ echo.
 
 REM ========================================================================
 REM [STEP 4] Install Playwright Browsers
-REM ========================================================================
-
+%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe
 echo [4/7] Installing Playwright browsers...
-echo [INFO] This may take 2-5 minutes on first run (one-time only)
+ech%ProgramFiles%\Google\Chrome\Application\chrome.exeo [INFO] This may take 2-5 minutes on first run (one-time only)
 echo.
 
 python -m playwright install --with-deps
@@ -153,10 +152,10 @@ REM Verify Chrome installation is available
 where chrome >nul 2>&1
 if errorlevel 1 (
     REM Chrome not in PATH, check common install locations
-    if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (
-        echo [OK] Chrome found at %ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe
-    ) else if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" (
-        echo [OK] Chrome found at %ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe
+    if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" (
+        echo [OK] Chrome found at %ProgramFiles%\Google\Chrome\Application\chrome.exe
+    ) else if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" (
+        echo [OK] Chrome found at %ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe
     ) else (
         echo [OK] Chrome found at: C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
     [STEP 6] Check and Start Ollama Server
