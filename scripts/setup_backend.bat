@@ -135,9 +135,8 @@ echo.
 
 REM ========================================================================
 REM [STEP 4] Install Playwright Browsers
-%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe
 echo [4/7] Installing Playwright browsers...
-ech%ProgramFiles%\Google\Chrome\Application\chrome.exeo [INFO] This may take 2-5 minutes on first run (one-time only)
+echo [INFO] This may take 2-5 minutes on first run (one-time only)
 echo.
 
 python -m playwright install --with-deps
