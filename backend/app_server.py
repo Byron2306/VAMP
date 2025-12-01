@@ -25,7 +25,7 @@ def create_app() -> tuple:
     socketio = SocketIO(
         app,
         28
-        ="*",
+                    cors_allowed_origins=os.getenv("VAMP_CORS_ALLOWED_ORIGINS", "http://localhost:8000"),
         async_mode='threading',  # Use threading for compatibility
         ping_timeout=60,  # Increase timeout to 60 seconds
         ping_interval=25,  # Send ping every 25 seconds
