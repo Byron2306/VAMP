@@ -274,23 +274,6 @@ def update_apply() -> Dict[str, object]:
 def update_rollback() -> Dict[str, object]:
     return agent_state().rollback()
 
-@contextmanager
-def _new_event_loop() -> Iterator[asyncio.AbstractEventLoop]:
-    """Provide a fresh asyncio event loop for synchronous routes."""
-
-    loop = asyncio.new_event_loop()
-    try:
-        asyncio.set_event_loop(loop)
-        yield loop
-    finally:
-        try:
-            loop.run_until_complete(loop.shutdown_asyncgens())
-        except Exception:
-            pass
-        asyncio.set_event_loop(None)
-        loop.close()
-
-
 @api.route("/scan/active", methods=["POST"])
 @json_response
 def scan_active() -> Dict[str, object]:
@@ -312,7 +295,9 @@ def scan_active() -> Dict[str, object]:
 
     from ..vamp_agent import run_scan_active_ws
 
-    with _new_event_loop() as loop:
+    
+try:
+            loop = asyncio.get_event_loop()
         try:
             result = loop.run_until_complete(
                 run_scan_active_ws(
