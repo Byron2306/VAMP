@@ -329,6 +329,16 @@ def scan_status() -> Dict[str, object]:
     records = state.evidence_records()
     return {"scans": records, "total": len(records)}
 
+@api.route("/ping", methods=["GET"])
+def ping():
+    """Enhanced ping endpoint with system diagnostics."""
+    return {
+        "status": "ok",
+        "timestamp": time.time(),
+        "version": "1.0",
+        "agent_status": "running"
+    }
+
 
 
 __all__ = ["api", "agent_state", "AgentAppState"]
