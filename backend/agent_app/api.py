@@ -1,3 +1,4 @@
+100
 """REST API exposing agent-as-app controls."""
 
 from __future__ import annotations
@@ -68,6 +69,11 @@ def update_connector(name: str) -> Dict[str, object]:
     payload = request.get_json(force=True, silent=True) or {}
     enabled = payload.get("enabled")
     config = payload.get("config")
+            # Validate input
+            if not isinstance(payload, dict):
+                return {"status": "error", "detail": "Invalid payload: must be JSON object"}, 400
+            if enabled is not None and not isinstance(enabled, bool):
+                return {"status": "error", "detail": "Invalid enabled: must be boolean"}, 400
     if enabled is not None:
         if enabled:
             state.enable_connector(name)
@@ -78,7 +84,8 @@ def update_connector(name: str) -> Dict[str, object]:
     return {"status": "ok"}
 
 
-@api.route("/connectors", methods=["PUT"])
+@api.route("/connectors", 65
+=["PUT"])
 @json_response
 def add_connector() -> Dict[str, object]:
     state = agent_state()
