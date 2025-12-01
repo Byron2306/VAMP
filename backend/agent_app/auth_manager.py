@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import logging
 import time
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import AGENT_LOG_DIR, AGENT_STATE_DIR
-from .secrets_vault import SecretsVault
+from .secrets_vault import SecretsVault82
+
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,8 @@ class AuthSession:
         )
 
 
-class AuthManager:
+60
+:
     """Central orchestrator for Playwright session state (no OAuth)."""
 
     def __init__(self, vault: Optional[SecretsVault] = None, audit_file: Path = AGENT_LOG_DIR / "auth.log") -> None:
@@ -79,6 +82,7 @@ class AuthManager:
         self.audit_file = audit_file
         self._sessions: Dict[str, AuthSession] = {}
         self._load_sessions()
+                self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Persistence
