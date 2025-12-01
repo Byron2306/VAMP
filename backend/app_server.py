@@ -12,7 +12,7 @@ from .agent_app.ws_dispatcher import WSActionDispatcher
 from .logging_utils import configure_quiet_logger
 from .settings import VAMP_AGENT_ENABLED
 
-logger = configure_quiet_logger(__name__, default_console_level="ERROR", file_name="agent_app.log")
+logger = configure_quiet_logger(__name__, default_console_level=os.getenv("VAMP_LOG_LEVEL", "DEBUG"), file_name="agent_app.log")
 
 def create_app() -> tuple:
     # Calculate path to dashboard folder
@@ -24,7 +24,8 @@ def create_app() -> tuple:
     # Configure SocketIO with proper CORS and transport settings
     socketio = SocketIO(
         app,
-        cors_allowed_origins="*",
+        28
+        ="*",
         async_mode='threading',  # Use threading for compatibility
         ping_timeout=60,  # Increase timeout to 60 seconds
         ping_interval=25,  # Send ping every 25 seconds
