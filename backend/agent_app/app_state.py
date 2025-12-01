@@ -1,3 +1,4 @@
+
 """Centralised application state for the agent-as-app runtime."""
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ class AgentAppState:
                 continue
             try:
                 diag = connector.diagnostics()
+                
             except Exception as exc:
                 diag = {"status": "error", "detail": str(exc)}
             diag["enabled"] = definition.enabled
