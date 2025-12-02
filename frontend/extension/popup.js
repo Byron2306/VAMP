@@ -49,7 +49,9 @@
   };
 
   // ---------- State Management ----------
-  let wsUrlCurrent = 'http://127.0.0.1:8080';
+  const LEGACY_WS_DEFAULTS = ['http://127.0.0.1:8080', 'http://localhost:8080'];
+  let wsUrlCurrent = '';
+  let wsUrlDefault = '';
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let isBusy = false;
@@ -68,12 +70,72 @@
   const toolEvents = [];
   const TOOL_EVENT_LIMIT = 30;
 
+  // ---------- Configuration ----------
+  async function loadExtensionConfig() {
+    const manifestConfig = chrome?.runtime?.getManifest?.()?.vampConfig || {};
+    const configUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL('config.json') : null;
+    let fileConfig = {};
+
+    if (configUrl) {
+      try {
+        const res = await fetch(configUrl);
+        if (res.ok) {
+          fileConfig = await res.json();
+        }
+      } catch (err) {
+        console.warn('[VAMP] Unable to load extension config.json', err);
+      }
+    }
+
+    const apiBaseUrl = manifestConfig.apiBaseUrl || manifestConfig.api_base_url || fileConfig.apiBaseUrl || fileConfig.api_base_url || '';
+    const wsBaseUrl = manifestConfig.wsBaseUrl || manifestConfig.ws_base_url || fileConfig.wsBaseUrl || fileConfig.ws_base_url || '';
+
+    return { apiBaseUrl, wsBaseUrl };
+  }
+
+  function deriveWsUrlFromApi(apiBaseUrl) {
+    if (!apiBaseUrl) return '';
+    try {
+      const u = new URL(apiBaseUrl);
+      return u.origin;
+    } catch (err) {
+      console.warn('[VAMP] Could not derive WS URL from apiBaseUrl', err);
+      return '';
+    }
+  }
+
+  async function resolveDefaultWsUrl() {
+    if (wsUrlDefault) return wsUrlDefault;
+
+    const cfg = await loadExtensionConfig();
+    wsUrlDefault = cfg.wsBaseUrl || deriveWsUrlFromApi(cfg.apiBaseUrl) || 'http://localhost:8080';
+    wsUrlCurrent = wsUrlDefault;
+
+    return wsUrlDefault;
+  }
+
   // ---------- Enhanced UI Helpers ----------
   function setStatus(text, type = 'disconnected') {
     if (els.wsStatus) {
       els.wsStatus.textContent = text;
       els.wsStatus.setAttribute('data-status', type);
     }
+  }
+
+  function formatEndpoint(url) {
+    if (!url) return '';
+    try {
+      const parsed = new URL(url);
+      return parsed.host || url;
+    } catch (err) {
+      return url.replace(/^https?:\/\//, '');
+    }
+  }
+
+  function setConnectionStatus(text, type = 'disconnected') {
+    const endpoint = formatEndpoint(wsUrlCurrent || wsUrlDefault);
+    const label = endpoint ? `${text} • ${endpoint}` : text;
+    setStatus(label, type);
   }
 
   function setProgressPct(pct, immediate = false) {
@@ -580,22 +642,50 @@
     return obj;
   }
 
-  function restoreSettings() {
-    try {
-      chrome.storage?.local?.get(['vamp_settings'], (res) => {
-        const s = res?.vamp_settings || {};
-        if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
-        if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
-        if (els.email && s.email)  els.email.value = s.email;
-        if (els.name  && s.name)   els.name.value  = s.name;
-        if (els.org   && s.org)    els.org.value   = s.org;
-        if (els.year  && s.year)   els.year.value  = String(s.year);
-        if (els.month && s.month)  els.month.value = String(s.month);
-        if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
-        if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-      });
-    } catch {
-      if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
+  function getStoredSettings() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage?.local?.get(['vamp_settings'], (res) => {
+          resolve(res?.vamp_settings || {});
+        });
+      } catch {
+        resolve({});
+      }
+    });
+  }
+
+  function migrateWsSetting(savedUrl = '') {
+    const trimmed = savedUrl.trim();
+    const effectiveDefault = wsUrlDefault || wsUrlCurrent;
+
+    if (trimmed && !LEGACY_WS_DEFAULTS.includes(trimmed)) {
+      return trimmed;
+    }
+
+    return effectiveDefault || trimmed;
+  }
+
+  async function restoreSettings() {
+    const s = await getStoredSettings();
+    const migratedWsUrl = migrateWsSetting(s.wsUrl);
+    if (els.wsUrl && migratedWsUrl) {
+      els.wsUrl.value = migratedWsUrl;
+      wsUrlCurrent = migratedWsUrl;
+    }
+    if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
+    if (els.email && s.email)  els.email.value = s.email;
+    if (els.name  && s.name)   els.name.value  = s.name;
+    if (els.org   && s.org)    els.org.value   = s.org;
+    if (els.year  && s.year)   els.year.value  = String(s.year);
+    if (els.month && s.month)  els.month.value = String(s.month);
+    if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+    if (els.wsUrl && !els.wsUrl.value) {
+      els.wsUrl.value = wsUrlCurrent || wsUrlDefault || '';
+    }
+
+    // Persist migration so subsequent loads use the derived endpoint
+    if (migratedWsUrl && migratedWsUrl !== s.wsUrl) {
+      saveSettings();
     }
   }
 
@@ -650,11 +740,18 @@
   }
 
   // ---------- WebSocket Management ----------
+  function resolveActiveWsUrl() {
+    const manual = els.wsUrl?.value?.trim();
+    if (manual) return manual;
+    if (wsUrlCurrent) return wsUrlCurrent;
+    return wsUrlDefault;
+  }
+
   function scheduleReconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = setTimeout(() => {
       logAnswer('Attempting to reconnect...', 'info');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+      connectWS(resolveActiveWsUrl());
       reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
     }, reconnectDelayMs);
   }
@@ -664,7 +761,7 @@
     socketHandlersRegistered = true;
 
     SocketIOManager.on('connect', () => {
-      setStatus('Connected', 'connected');
+      setConnectionStatus('Connected', 'connected');
       reconnectDelayMs = 1000;
       enableControls(true);
       logAnswer('WebSocket connected successfully', 'success');
@@ -681,12 +778,12 @@
     SocketIOManager.on('message', (ev) => handleMessage(ev.data));
 
     SocketIOManager.on('error', () => {
-      setStatus('Connection Error', 'error');
+      setConnectionStatus('Connection Error', 'error');
       logAnswer('WebSocket connection error', 'error');
     });
 
     SocketIOManager.on('disconnect', (event) => {
-      setStatus('Disconnected', 'disconnected');
+      setConnectionStatus('Disconnected', 'disconnected');
       if (event?.code !== 1000) {
         logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
       }
@@ -696,8 +793,8 @@
 
   function connectWS(url) {
     clearTimeout(reconnectTimer);
-    wsUrlCurrent = url || wsUrlCurrent;
-    setStatus('Connecting...', 'scanning');
+    wsUrlCurrent = url || wsUrlCurrent || wsUrlDefault;
+    setConnectionStatus('Connecting...', 'scanning');
     ensureSocketHandlers();
 
     try {
@@ -716,7 +813,7 @@
   function sendWS(obj) {
     if (!SocketIOManager.isConnected()) {
       logAnswer('Not connected - reconnecting...', 'warning');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+      connectWS(resolveActiveWsUrl());
       setTimeout(() => {
         if (SocketIOManager.isConnected()) {
           SocketIOManager.send(obj);
@@ -827,7 +924,7 @@
         const toolList = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         recordToolFeedback(toolList, 'Brain Scan');
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         stopHeartbeat();
         clearTimeout(scanTimeout);
         playOpenSound();
@@ -845,7 +942,7 @@
         setScanNote(data.note || 'Office365 scan completed');
         logAnswer('✅ Office365 scan finished', 'success');
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         stopHeartbeat();
         clearTimeout(scanTimeout);
         
@@ -892,7 +989,7 @@
 
         if (mode !== 'brain_scan' || !isBusy) {
           enableControls(true);
-          setStatus('Connected', 'connected');
+          setConnectionStatus('Connected', 'connected');
         }
         break;
       }
@@ -904,7 +1001,7 @@
           logAnswer(`📋 ${answer}`, 'info');
         }
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         break;
       }
 
@@ -1180,10 +1277,11 @@
   }
 
   // ---------- Enhanced Initialization ----------
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     playOpenSound();
     ensureYearMonth();
-    restoreSettings();
+    await resolveDefaultWsUrl();
+    await restoreSettings();
     renderChatHistory();
     renderToolFeedback();
     updateBrainSummary('', {});
@@ -1207,12 +1305,12 @@
 
     // Initialize connection
     if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent;
+      els.wsUrl.value = wsUrlCurrent || wsUrlDefault;
     } else if (els.wsUrl) {
-      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent;
+      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent || wsUrlDefault;
     }
 
-    connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+    connectWS(resolveActiveWsUrl());
 
     // Event listeners
     els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
