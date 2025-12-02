@@ -1,4 +1,67 @@
-let API_ROOT = window.localStorage.getItem('vamp-api') || 'http://localhost:8080/api';
+const DEFAULT_API_ROOT = 'http://localhost:8080/api';
+
+function normalizeApiRoot(value) {
+  if (!value) throw new Error('API root is required.');
+  let url;
+  try {
+    url = new URL(value, window.location.origin);
+  } catch (err) {
+    throw new Error('API root must be a valid URL.');
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw new Error('API root must use http or https.');
+  }
+  const sanitizedPath = url.pathname.replace(/\/+$/, '');
+  url.pathname = sanitizedPath.endsWith('/api') ? sanitizedPath : `${sanitizedPath || ''}/api`;
+  url.hash = '';
+  return url.toString().replace(/\/$/, '');
+}
+
+function resolveApiRoot() {
+  const candidates = [
+    {
+      value:
+        window.__VAMP_API_ROOT__ ||
+        window.VAMP_API_ROOT ||
+        window.__ENV__?.VAMP_API_ROOT ||
+        document.querySelector('meta[name="vamp-api-root"]')?.content,
+      source: 'build configuration',
+    },
+    { value: window.localStorage.getItem('vamp-api'), source: 'local storage' },
+    {
+      value:
+        window.location?.origin && window.location.origin !== 'null'
+          ? `${window.location.origin}/api`
+          : null,
+      source: 'current origin',
+    },
+    { value: DEFAULT_API_ROOT, source: 'default' },
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.value) continue;
+    try {
+      const normalized = normalizeApiRoot(candidate.value);
+      if (candidate.source === 'local storage' && normalized !== candidate.value) {
+        window.localStorage.setItem('vamp-api', normalized);
+      }
+      return { apiRoot: normalized, source: candidate.source };
+    } catch (err) {
+      if (candidate.source === 'local storage') {
+        window.localStorage.removeItem('vamp-api');
+      }
+    }
+  }
+
+  return { apiRoot: DEFAULT_API_ROOT, source: 'default' };
+}
+
+function setApiRoot(apiRoot) {
+  API_ROOT = apiRoot;
+  document.getElementById('api-root').value = apiRoot;
+}
+
+let API_ROOT = resolveApiRoot().apiRoot;
 
 async function fetchJson(path, options = {}) {
   const res = await fetch(`${API_ROOT}${path}`, {
@@ -38,6 +101,12 @@ function formatDate(input) {
   } catch (err) {
     return String(input);
   }
+}
+
+function reportConfigurationError(message) {
+  document.getElementById('health-summary').textContent = message;
+  document.getElementById('health-raw').textContent = message;
+  setChipStatus(document.getElementById('health-status'), 'error');
 }
 
 function updateConnectorsTable(connectors) {
@@ -94,12 +163,12 @@ function renderHealth(health) {
   setChipStatus(document.getElementById('health-status'), status);
 }
 
-async function refresh() {
+async function refresh(preloadedHealth = null) {
   const healthEl = document.getElementById('health-raw');
   healthEl.textContent = 'Refreshing…';
   try {
     const [health, connectors, auth, evidence, updates] = await Promise.all([
-      fetchJson('/health'),
+      preloadedHealth ? Promise.resolve(preloadedHealth) : fetchJson('/health'),
       fetchJson('/connectors'),
       fetchJson('/auth/sessions'),
       fetchJson('/evidence'),
@@ -175,21 +244,50 @@ async function applyUpdate() {
   renderUpdateSummary(result);
 }
 
+function validateAndPersistApiRoot(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return null;
+  try {
+    const normalized = normalizeApiRoot(trimmed);
+    window.localStorage.setItem('vamp-api', normalized);
+    setApiRoot(normalized);
+    document.getElementById('api-root').setCustomValidity('');
+    return normalized;
+  } catch (err) {
+    document.getElementById('api-root').setCustomValidity(err.message);
+    document.getElementById('api-root').reportValidity();
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
+}
+
+async function preflightHealthCheck() {
+  const summaryEl = document.getElementById('health-summary');
+  summaryEl.textContent = `Checking ${API_ROOT}…`;
+  try {
+    const health = await fetchJson('/health');
+    renderHealth(health);
+    document.getElementById('health-raw').textContent = JSON.stringify(health, null, 2);
+    return health;
+  } catch (err) {
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
+}
+
 function persistApiRoot() {
   const input = document.getElementById('api-root');
-  const value = (input.value || '').trim();
-  if (!value) return;
-  window.localStorage.setItem('vamp-api', value);
-  API_ROOT = value;
+  return validateAndPersistApiRoot(input.value);
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  const apiField = document.getElementById('api-root');
-  apiField.value = API_ROOT;
+  setApiRoot(API_ROOT);
 
-  document.getElementById('save-api').addEventListener('click', () => {
-    persistApiRoot();
-    refresh();
+  document.getElementById('save-api').addEventListener('click', async () => {
+    const normalized = persistApiRoot();
+    if (!normalized) return;
+    const health = await preflightHealthCheck();
+    if (health) refresh(health);
   });
   document.getElementById('refresh').addEventListener('click', refresh);
   document.getElementById('refresh-session').addEventListener('click', refreshSessionState);
@@ -209,5 +307,7 @@ window.addEventListener('DOMContentLoaded', () => {
       .catch((err) => alert(err.message));
   });
 
-  refresh();
+  preflightHealthCheck().then((health) => {
+    if (health) refresh(health);
+  });
 });
