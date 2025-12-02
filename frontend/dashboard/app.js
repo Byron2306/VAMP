@@ -114,6 +114,12 @@ function formatDate(input) {
   }
 }
 
+function reportConfigurationError(message) {
+  document.getElementById('health-summary').textContent = message;
+  document.getElementById('health-raw').textContent = message;
+  setChipStatus(document.getElementById('health-status'), 'error');
+}
+
 function updateConnectorsTable(connectors) {
   const tbody = document.querySelector('#connectors tbody');
   tbody.innerHTML = '';
@@ -168,12 +174,12 @@ function renderHealth(health) {
   setChipStatus(document.getElementById('health-status'), status);
 }
 
-async function refresh() {
+async function refresh(preloadedHealth = null) {
   const healthEl = document.getElementById('health-raw');
   healthEl.textContent = 'Refreshing…';
   try {
     const [health, connectors, auth, evidence, updates] = await Promise.all([
-      fetchJson('/health'),
+      preloadedHealth ? Promise.resolve(preloadedHealth) : fetchJson('/health'),
       fetchJson('/connectors'),
       fetchJson('/auth/sessions'),
       fetchJson('/evidence'),
@@ -247,6 +253,37 @@ async function applyUpdate() {
   const result = await fetchJson('/updates/apply', { method: 'POST' });
   document.getElementById('updates-raw').textContent = JSON.stringify(result, null, 2);
   renderUpdateSummary(result);
+}
+
+function validateAndPersistApiRoot(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return null;
+  try {
+    const normalized = normalizeApiRoot(trimmed);
+    window.localStorage.setItem('vamp-api', normalized);
+    setApiRoot(normalized);
+    document.getElementById('api-root').setCustomValidity('');
+    return normalized;
+  } catch (err) {
+    document.getElementById('api-root').setCustomValidity(err.message);
+    document.getElementById('api-root').reportValidity();
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
+}
+
+async function preflightHealthCheck() {
+  const summaryEl = document.getElementById('health-summary');
+  summaryEl.textContent = `Checking ${API_ROOT}…`;
+  try {
+    const health = await fetchJson('/health');
+    renderHealth(health);
+    document.getElementById('health-raw').textContent = JSON.stringify(health, null, 2);
+    return health;
+  } catch (err) {
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
 }
 
 function persistApiRoot() {
