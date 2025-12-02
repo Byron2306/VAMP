@@ -48,15 +48,10 @@ logger = configure_quiet_logger(
     file_name="ws_bridge.log",
 )
 
-try:
-    from .ollama_client import ask_ollama, analyze_feedback_with_ollama
-except Exception as e:
-    logger.warning(f"Ollama client not available: {e}")
+try:# Ollama client removed - no AI API dependencies
+    # These are stubs for compatibility
+    ask_ollama = None  # type: ignore    logger.warning(f"Ollama client not available: {e}")
     ask_ollama = None  # type: ignore
-    analyze_feedback_with_ollama = None  # type: ignore
-
-
-def _supports_structured_feedback(func: Optional[Any]) -> bool:
     code = getattr(func, "__code__", None)
     try:
         return bool(code and getattr(code, "co_argcount", 0) >= 2)
