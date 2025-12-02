@@ -6,6 +6,9 @@
 const ICON_128 = 'icons/icon128.png';
 const DAILY_ALARM = 'vampDailyNudge';
 const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
+const DEFAULT_WS_URL = 'http://127.0.0.1:8080';
+const RECONNECT_MAX_DELAY_MS = 20000;
+const HEARTBEAT_INTERVAL_MS = 15000;
 
 // ---------- Install / Update ----------
 chrome.runtime.onInstalled.addListener(() => {
@@ -21,6 +24,12 @@ chrome.runtime.onInstalled.addListener(() => {
     },
     vamp_evidence: []
   }).catch?.(() => {});
+
+  initialiseSocket('install');
+});
+
+chrome.runtime.onStartup?.addListener(() => {
+  initialiseSocket('startup');
 });
 
 // ---------- Alarms ----------
@@ -75,6 +84,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || typeof msg !== 'object') {
       sendResponse?.({ ok: false, error: 'Bad message' });
+      return;
+    }
+
+    if (msg.type === 'WS_CONNECT') {
+      await initialiseSocket('popup');
+      sendResponse?.({ ok: true });
+      return;
+    }
+
+    if (msg.type === 'WS_DISCONNECT') {
+      teardownSocket();
+      sendResponse?.({ ok: true });
+      return;
+    }
+
+    if (msg.type === 'WS_STATUS') {
+      sendResponse?.({
+        ok: true,
+        status: socket?.connected ? 'connected' : 'disconnected',
+        url: lastWsUrl
+      });
       return;
     }
 
@@ -161,6 +191,146 @@ chrome.notifications.onClicked.addListener(() => {
 self.addEventListener('unhandledrejection', (ev) => {
   console.warn('Unhandled promise rejection in service-worker:', ev.reason);
 });
+
+// ---------- Socket.IO connectivity (NEW) ----------
+let socket = null;
+let socketIoPromise = null;
+let reconnectTimer = null;
+let heartbeatTimer = null;
+let reconnectDelayMs = 1000;
+let lastWsUrl = DEFAULT_WS_URL;
+
+async function resolveWsUrl() {
+  try {
+    const { vamp_settings: settings } = await chrome.storage.local.get(['vamp_settings']);
+    const stored = settings?.wsUrl;
+    if (typeof stored === 'string' && stored.trim()) {
+      return stored.trim();
+    }
+  } catch (err) {
+    console.warn('Unable to read wsUrl from storage', err);
+  }
+  return DEFAULT_WS_URL;
+}
+
+async function loadSocketIOLibrary() {
+  if (socketIoPromise) return socketIoPromise;
+
+  socketIoPromise = (async () => {
+    const src = chrome.runtime.getURL('vendor/socket.io.min.js');
+    const res = await fetch(src);
+    const code = await res.text();
+    const factory = new Function('self', `${code}; return self.io;`);
+    const ioClient = factory(self);
+    if (!ioClient) {
+      throw new Error('Socket.IO client failed to initialise');
+    }
+    return ioClient;
+  })();
+
+  return socketIoPromise;
+}
+
+function emitWsStatus(status, details = {}) {
+  chrome.runtime.sendMessage({
+    type: 'WS_STATUS',
+    status,
+    ...details
+  }).catch?.(() => {});
+}
+
+function emitWsEvent(event, payload = {}) {
+  chrome.runtime.sendMessage({
+    type: 'WS_EVENT',
+    event,
+    payload
+  }).catch?.(() => {});
+}
+
+function stopHeartbeatLoop() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeatLoop() {
+  stopHeartbeatLoop();
+  heartbeatTimer = setInterval(() => {
+    emitWsStatus('heartbeat', {
+      url: lastWsUrl,
+      connected: Boolean(socket?.connected),
+      ts: Date.now()
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function scheduleReconnect(reason = 'retry') {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    initialiseSocket(reason).catch(() => {});
+    reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.5), RECONNECT_MAX_DELAY_MS);
+  }, reconnectDelayMs);
+
+  emitWsStatus('reconnecting', {
+    delayMs: reconnectDelayMs,
+    reason
+  });
+}
+
+async function initialiseSocket(reason = 'manual') {
+  clearTimeout(reconnectTimer);
+  const url = await resolveWsUrl();
+  lastWsUrl = url;
+  emitWsStatus('connecting', { url, reason });
+
+  const ioClient = await loadSocketIOLibrary();
+
+  try {
+    socket?.removeAllListeners?.();
+    socket?.disconnect?.();
+  } catch (err) {
+    console.warn('Error cleaning previous socket', err);
+  }
+
+  socket = ioClient(url, {
+    reconnection: false,
+    transports: ['websocket', 'polling']
+  });
+
+  socket.on('connect', () => {
+    reconnectDelayMs = 1000;
+    emitWsStatus('connected', { url });
+    startHeartbeatLoop();
+  });
+
+  socket.on('connect_error', (error) => {
+    emitWsStatus('error', { message: error?.message || 'connect_error' });
+    scheduleReconnect('connect_error');
+  });
+
+  socket.on('disconnect', (why) => {
+    emitWsStatus('disconnected', { reason: why });
+    stopHeartbeatLoop();
+    scheduleReconnect('disconnect');
+  });
+
+  socket.onAny((event, data) => {
+    emitWsEvent(event, data);
+  });
+}
+
+function teardownSocket() {
+  clearTimeout(reconnectTimer);
+  stopHeartbeatLoop();
+  try {
+    socket?.removeAllListeners?.();
+    socket?.disconnect?.();
+  } catch (err) {
+    console.warn('Error tearing down socket', err);
+  }
+  socket = null;
+}
 
 // ---------- Optional keep-alive (disabled) ----------
 // chrome.alarms.create('vamp-keepalive', { periodInMinutes: 4 });
