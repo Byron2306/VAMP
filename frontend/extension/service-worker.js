@@ -22,7 +22,7 @@ let reconnectDelayMs = 1000;
 let lastPongAt = Date.now();
 
 // ---------- Install / Update ----------
-chrome.runtime.onInstalled.addListener(() => {
+chrome.runtime.onInstalled.addListener(async () => {
   // Daily reminder alarm (idempotent)
   chrome.alarms.create(DAILY_ALARM, { periodInMinutes: 60 * 24 });
 
@@ -65,8 +65,8 @@ async function ensureOffscreen() {
   }
   await chrome.offscreen.createDocument({
     url: OFFSCREEN_URL,
-    reasons: [chrome.offscreen.Reason.AUDIO_PLAYBACK],
-    justification: 'Play short UI sounds for VAMP without user gesture'
+    reasons: [chrome.offscreen.Reason.AUDIO_PLAYBACK, chrome.offscreen.Reason.IFRAME_SCRIPTING],
+    justification: 'Play short UI sounds and maintain background Socket.IO connection for VAMP'
   });
 }
 
@@ -227,6 +227,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || typeof msg !== 'object') {
       sendResponse?.({ ok: false, error: 'Bad message' });
+      return;
+    }
+
+    if (msg.source === 'offscreen-socket') {
+      if (msg.event === 'status' && msg.state) {
+        connectionState = msg.state;
+        await persistConnectionState(msg.state, true);
+        sendResponse?.({ ok: true });
+        return;
+      }
+      if (msg.event === 'message' && msg.payload) {
+        try { chrome.runtime.sendMessage({ type: 'VAMP_SOCKET_MESSAGE', payload: msg.payload }); } catch {}
+        try {
+          chrome.tabs.query({}, (tabs) => {
+            tabs.forEach((tab) => {
+              chrome.tabs.sendMessage(tab.id, { type: 'VAMP_SOCKET_MESSAGE', payload: msg.payload }).catch?.(() => {});
+            });
+          });
+        } catch {}
+        sendResponse?.({ ok: true });
+        return;
+      }
+    }
+
+    if (msg.type === 'VAMP_SOCKET_STATUS_REQUEST') {
+      sendResponse?.({ ok: true, state: connectionState });
+      return;
+    }
+
+    if (msg.type === 'VAMP_SOCKET_CONNECT') {
+      const res = await startBackgroundSocket(msg.url);
+      sendResponse?.({ ok: !!res?.ok, state: connectionState, error: res?.error });
+      return;
+    }
+
+    if (msg.type === 'VAMP_SOCKET_SEND') {
+      const res = await relaySocketSend(msg.payload);
+      sendResponse?.({ ok: !!res?.ok, error: res?.error });
       return;
     }
 
