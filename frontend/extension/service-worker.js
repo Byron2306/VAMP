@@ -1,6 +1,10 @@
 // service-worker.js — VAMP (MV3)
 // Combines your existing background features (alarms, notifications, state, pings)
 // with offscreen audio so sounds can play when the popup opens (no click needed).
+//
+// This worker also owns the Socket.IO connection so that connectivity status is
+// accurate even when the popup is closed. It forwards status updates and
+// messages to the UI via chrome.runtime messaging.
 
 // ---------- Constants ----------
 const ICON_128 = 'icons/icon128.png';
@@ -283,6 +287,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // 4) Health ping (kept)
     if (msg.type === 'VAMP_SW_PING') {
       sendResponse?.({ ok: true, pong: true });
+      return;
+    }
+
+    // 4b) Socket lifecycle routed through the background
+    if (msg.type === 'WS_CONNECT') {
+      connectSocket(msg.url || '');
+      sendResponse?.({ ok: true });
+      return;
+    }
+
+    if (msg.type === 'WS_DISCONNECT') {
+      disconnectSocket(true);
+      sendResponse?.({ ok: true });
+      return;
+    }
+
+    if (msg.type === 'WS_SEND') {
+      const sent = sendViaSocket(msg.payload);
+      sendResponse?.({ ok: sent });
+      return;
+    }
+
+    if (msg.type === 'WS_GET_STATUS') {
+      sendResponse?.({ ok: true, status: wsStatus });
       return;
     }
 

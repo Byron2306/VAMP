@@ -123,6 +123,67 @@
     }
   }
 
+  function handleWsStatusMessage(message = {}) {
+    const status = message.status || 'disconnected';
+    const detail = message.detail || {};
+    wsStatusCache = { status, detail, url: message.url };
+
+    if (detail.heartbeat) {
+      return; // avoid chatty logs for keep-alives
+    }
+
+    switch (status) {
+      case 'connecting':
+        setStatus('Connecting...', 'scanning');
+        enableControls(false);
+        break;
+      case 'reconnecting':
+        setStatus('Reconnecting...', 'scanning');
+        enableControls(false);
+        logAnswer('Attempting to reconnect...', 'info');
+        break;
+      case 'connected':
+        setStatus('Connected', 'connected');
+        enableControls(true);
+        logAnswer('WebSocket connected (background)', 'success');
+        refreshEvidenceDisplay();
+        break;
+      case 'error':
+        setStatus('Connection Error', 'error');
+        enableControls(false);
+        if (detail.message) {
+          logAnswer(`WebSocket error: ${detail.message}`, 'error');
+        }
+        break;
+      default:
+        setStatus('Disconnected', 'disconnected');
+        enableControls(false);
+        if (detail?.reason && !detail.manual) {
+          logAnswer(`Connection lost: ${detail.reason}`, 'error');
+        }
+        break;
+    }
+  }
+
+  function requestWsStatus() {
+    try {
+      chrome.runtime?.sendMessage({ type: 'WS_GET_STATUS' }, (res) => {
+        if (chrome.runtime?.lastError) return;
+        if (res?.status) handleWsStatusMessage(res.status);
+      });
+    } catch {}
+  }
+
+  chrome.runtime?.onMessage?.addListener((msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'WS_STATUS') {
+      handleWsStatusMessage(msg);
+    }
+    if (msg.type === 'WS_MESSAGE') {
+      handleMessage(msg.data);
+    }
+  });
+
   function formatEndpoint(url) {
     if (!url) return '';
     try {
