@@ -50,14 +50,12 @@
 
   // ---------- State Management ----------
   let wsUrlCurrent = 'http://127.0.0.1:8080';
-  let reconnectTimer = null;
-  let reconnectDelayMs = 1000;
   let isBusy = false;
   let lastPhase = 'idle';
   let lastPct = 0;
   let heartbeatTimer = null;
   let scanTimeout = null;
-  let socketHandlersRegistered = false;
+  let wsStatusCache = { status: 'disconnected', detail: {} };
   
   // Evidence state
   let currentEvidence = [];
@@ -75,6 +73,67 @@
       els.wsStatus.setAttribute('data-status', type);
     }
   }
+
+  function handleWsStatusMessage(message = {}) {
+    const status = message.status || 'disconnected';
+    const detail = message.detail || {};
+    wsStatusCache = { status, detail, url: message.url };
+
+    if (detail.heartbeat) {
+      return; // avoid chatty logs for keep-alives
+    }
+
+    switch (status) {
+      case 'connecting':
+        setStatus('Connecting...', 'scanning');
+        enableControls(false);
+        break;
+      case 'reconnecting':
+        setStatus('Reconnecting...', 'scanning');
+        enableControls(false);
+        logAnswer('Attempting to reconnect...', 'info');
+        break;
+      case 'connected':
+        setStatus('Connected', 'connected');
+        enableControls(true);
+        logAnswer('WebSocket connected (background)', 'success');
+        refreshEvidenceDisplay();
+        break;
+      case 'error':
+        setStatus('Connection Error', 'error');
+        enableControls(false);
+        if (detail.message) {
+          logAnswer(`WebSocket error: ${detail.message}`, 'error');
+        }
+        break;
+      default:
+        setStatus('Disconnected', 'disconnected');
+        enableControls(false);
+        if (detail?.reason && !detail.manual) {
+          logAnswer(`Connection lost: ${detail.reason}`, 'error');
+        }
+        break;
+    }
+  }
+
+  function requestWsStatus() {
+    try {
+      chrome.runtime?.sendMessage({ type: 'WS_GET_STATUS' }, (res) => {
+        if (chrome.runtime?.lastError) return;
+        if (res?.status) handleWsStatusMessage(res.status);
+      });
+    } catch {}
+  }
+
+  chrome.runtime?.onMessage?.addListener((msg) => {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'WS_STATUS') {
+      handleWsStatusMessage(msg);
+    }
+    if (msg.type === 'WS_MESSAGE') {
+      handleMessage(msg.data);
+    }
+  });
 
   function setProgressPct(pct, immediate = false) {
     const v = Math.max(0, Math.min(100, Number(pct) || 0));
@@ -650,86 +709,43 @@
   }
 
   // ---------- WebSocket Management ----------
-  function scheduleReconnect() {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-      logAnswer('Attempting to reconnect...', 'info');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
-    }, reconnectDelayMs);
-  }
-
-  function ensureSocketHandlers() {
-    if (socketHandlersRegistered) return;
-    socketHandlersRegistered = true;
-
-    SocketIOManager.on('connect', () => {
-      setStatus('Connected', 'connected');
-      reconnectDelayMs = 1000;
-      enableControls(true);
-      logAnswer('WebSocket connected successfully', 'success');
-
-      try {
-        chrome.storage?.local?.get(['vamp_settings'], (res) => {
-          const s = res?.vamp_settings || {};
-          s.wsUrl = els.wsUrl?.value?.trim() || wsUrlCurrent;
-          chrome.storage?.local?.set({ vamp_settings: s });
-        });
-      } catch {}
-    });
-
-    SocketIOManager.on('message', (ev) => handleMessage(ev.data));
-
-    SocketIOManager.on('error', () => {
-      setStatus('Connection Error', 'error');
-      logAnswer('WebSocket connection error', 'error');
-    });
-
-    SocketIOManager.on('disconnect', (event) => {
-      setStatus('Disconnected', 'disconnected');
-      if (event?.code !== 1000) {
-        logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
-      }
-      if (!document.hidden) scheduleReconnect();
-    });
-  }
-
   function connectWS(url) {
-    clearTimeout(reconnectTimer);
     wsUrlCurrent = url || wsUrlCurrent;
     setStatus('Connecting...', 'scanning');
-    ensureSocketHandlers();
-
     try {
-      SocketIOManager.disconnect();
+      chrome.runtime?.sendMessage({ type: 'WS_CONNECT', url: wsUrlCurrent }, (res) => {
+        if (chrome.runtime?.lastError) {
+          setStatus('Connection Error', 'error');
+          logAnswer(`Connection error: ${chrome.runtime.lastError.message}`, 'error');
+          return;
+        }
+        if (!res?.ok) {
+          setStatus('Connection Error', 'error');
+          logAnswer('Background rejected connection request', 'error');
+        }
+      });
     } catch (err) {
-      console.warn('[SocketIO] Disconnect failed', err);
+      setStatus('Connection Error', 'error');
+      logAnswer(`Connection error: ${err.message}`, 'error');
     }
-
-    SocketIOManager.connect(wsUrlCurrent).catch((e) => {
-      setStatus('Connection Failed', 'error');
-      logAnswer(`Connection error: ${e?.message || e}`, 'error');
-      scheduleReconnect();
-    });
   }
 
   function sendWS(obj) {
-    if (!SocketIOManager.isConnected()) {
-      logAnswer('Not connected - reconnecting...', 'warning');
+    if (wsStatusCache.status !== 'connected') {
+      logAnswer('Not connected - asking background to reconnect', 'warning');
       connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-      setTimeout(() => {
-        if (SocketIOManager.isConnected()) {
-          SocketIOManager.send(obj);
-          logAnswer('Command sent after reconnect', 'success');
-        } else {
-          logAnswer('Failed to reconnect for command', 'error');
-        }
-      }, 500);
-      return;
     }
 
     try {
-      SocketIOManager.send(obj);
+      chrome.runtime?.sendMessage({ type: 'WS_SEND', payload: obj }, (res) => {
+        if (chrome.runtime?.lastError) {
+          logAnswer('Failed to send command: background unavailable', 'error');
+          return;
+        }
+        if (!res?.ok) {
+          logAnswer('Failed to send command: socket not connected', 'error');
+        }
+      });
     } catch (e) {
       logAnswer(`Failed to send command: ${e.message}`, 'error');
     }
@@ -1213,6 +1229,7 @@
     }
 
     connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+    requestWsStatus();
 
     // Event listeners
     els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
@@ -1286,17 +1303,10 @@
 
     // Initial evidence load
     setTimeout(() => {
-      if (SocketIOManager.isConnected()) {
+      if (wsStatusCache.status === 'connected') {
         refreshEvidenceDisplay();
       }
     }, 1000);
-  });
-
-  window.addEventListener('unload', () => {
-    stopHeartbeat();
-    clearTimeout(reconnectTimer);
-    clearTimeout(scanTimeout);
-    SocketIOManager.disconnect();
   });
 })();
 
