@@ -649,91 +649,80 @@
     if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
   }
 
-  // ---------- WebSocket Management ----------
-  function scheduleReconnect() {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-      logAnswer('Attempting to reconnect...', 'info');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
-    }, reconnectDelayMs);
+  // ---------- WebSocket Management (background-driven) ----------
+  function applyConnectionState(state) {
+    if (!state) return;
+    const status = state.status || 'disconnected';
+    const label = status === 'connected'
+      ? 'Connected'
+      : status === 'connecting'
+        ? 'Connecting...'
+        : status === 'error'
+          ? 'Connection Error'
+          : 'Disconnected';
+    wsUrlCurrent = state.url || wsUrlCurrent;
+    setStatus(label, status === 'connected' ? 'connected' : status === 'error' ? 'error' : status === 'connecting' ? 'scanning' : 'disconnected');
   }
 
-  function ensureSocketHandlers() {
-    if (socketHandlersRegistered) return;
-    socketHandlersRegistered = true;
-
-    SocketIOManager.on('connect', () => {
-      setStatus('Connected', 'connected');
-      reconnectDelayMs = 1000;
-      enableControls(true);
-      logAnswer('WebSocket connected successfully', 'success');
-
-      try {
-        chrome.storage?.local?.get(['vamp_settings'], (res) => {
-          const s = res?.vamp_settings || {};
-          s.wsUrl = els.wsUrl?.value?.trim() || wsUrlCurrent;
-          chrome.storage?.local?.set({ vamp_settings: s });
-        });
-      } catch {}
-    });
-
-    SocketIOManager.on('message', (ev) => handleMessage(ev.data));
-
-    SocketIOManager.on('error', () => {
-      setStatus('Connection Error', 'error');
-      logAnswer('WebSocket connection error', 'error');
-    });
-
-    SocketIOManager.on('disconnect', (event) => {
-      setStatus('Disconnected', 'disconnected');
-      if (event?.code !== 1000) {
-        logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
-      }
-      if (!document.hidden) scheduleReconnect();
-    });
+  function hydrateConnectionState() {
+    try {
+      chrome.storage?.local?.get(['vamp_connection'], (res) => {
+        if (res?.vamp_connection) {
+          applyConnectionState(res.vamp_connection);
+        }
+      });
+    } catch {}
   }
 
-  function connectWS(url) {
+  async function connectWS(url) {
     clearTimeout(reconnectTimer);
     wsUrlCurrent = url || wsUrlCurrent;
     setStatus('Connecting...', 'scanning');
-    ensureSocketHandlers();
-
     try {
-      SocketIOManager.disconnect();
+      const res = await chrome.runtime.sendMessage({ type: 'VAMP_SOCKET_CONNECT', url: wsUrlCurrent });
+      if (res?.ok && res.state) {
+        applyConnectionState(res.state);
+      } else if (res?.error) {
+        setStatus('Connection Failed', 'error');
+        logAnswer(`Connection error: ${res.error}`, 'error');
+      }
     } catch (err) {
-      console.warn('[SocketIO] Disconnect failed', err);
-    }
-
-    SocketIOManager.connect(wsUrlCurrent).catch((e) => {
       setStatus('Connection Failed', 'error');
-      logAnswer(`Connection error: ${e?.message || e}`, 'error');
-      scheduleReconnect();
-    });
+      logAnswer(`Connection error: ${err?.message || err}`, 'error');
+    }
   }
 
-  function sendWS(obj) {
-    if (!SocketIOManager.isConnected()) {
-      logAnswer('Not connected - reconnecting...', 'warning');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-      setTimeout(() => {
-        if (SocketIOManager.isConnected()) {
-          SocketIOManager.send(obj);
-          logAnswer('Command sent after reconnect', 'success');
-        } else {
-          logAnswer('Failed to reconnect for command', 'error');
-        }
-      }, 500);
-      return;
-    }
-
+  async function sendWS(obj) {
     try {
-      SocketIOManager.send(obj);
+      const res = await chrome.runtime.sendMessage({ type: 'VAMP_SOCKET_SEND', payload: obj });
+      if (!res?.ok) {
+        logAnswer('Not connected - attempting to reconnect', 'warning');
+        await connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+      }
     } catch (e) {
       logAnswer(`Failed to send command: ${e.message}`, 'error');
+      setStatus('Connection Error', 'error');
     }
   }
+
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg?.type === 'VAMP_CONNECTION_STATUS' && msg.state) {
+      applyConnectionState(msg.state);
+      return;
+    }
+    if (msg?.type === 'VAMP_SOCKET_MESSAGE' && msg.payload) {
+      const raw = typeof msg.payload === 'string' ? msg.payload : JSON.stringify(msg.payload);
+      handleMessage(raw);
+    }
+  });
+
+  try {
+    chrome.storage?.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.vamp_connection?.newValue) {
+        applyConnectionState(changes.vamp_connection.newValue);
+      }
+    });
+  } catch {}
 
   // ---------- Enhanced Message Handling ----------
   function handleMessage(raw) {
@@ -1184,6 +1173,7 @@
     playOpenSound();
     ensureYearMonth();
     restoreSettings();
+    hydrateConnectionState();
     renderChatHistory();
     renderToolFeedback();
     updateBrainSummary('', {});
@@ -1286,9 +1276,13 @@
 
     // Initial evidence load
     setTimeout(() => {
-      if (SocketIOManager.isConnected()) {
-        refreshEvidenceDisplay();
-      }
+      try {
+        chrome.storage?.local?.get(['vamp_connection'], (res) => {
+          if (res?.vamp_connection?.status === 'connected') {
+            refreshEvidenceDisplay();
+          }
+        });
+      } catch {}
     }, 1000);
   });
 
@@ -1296,7 +1290,6 @@
     stopHeartbeat();
     clearTimeout(reconnectTimer);
     clearTimeout(scanTimeout);
-    SocketIOManager.disconnect();
   });
 })();
 
