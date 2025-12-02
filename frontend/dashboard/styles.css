@@ -121,6 +121,15 @@ main {
   margin: 0.35rem 0;
 }
 
+.status-message {
+  display: block;
+  margin-top: 0.25rem;
+}
+
+.status-message.success { color: var(--success); }
+.status-message.warning { color: var(--warning); }
+.status-message.danger { color: var(--danger); }
+
 label { font-weight: 600; }
 
 input, select {
