@@ -1,5 +1,4 @@
-"""Telemetry helpers for tracking Ollama / NWU Brain activity."""
-
+"""Telemetry helpers for tracking NWU Brain activity."""
 from __future__ import annotations
 
 import copy
