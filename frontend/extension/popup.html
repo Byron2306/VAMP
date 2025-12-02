@@ -24,7 +24,11 @@
     <div class="section-title">Connection</div>
     <div class="row">
       <label for="wsUrl">Server URL</label>
-      <input id="wsUrl" type="text" placeholder="https://vamp.nwu.ac.za" />
+      <input id="wsUrl" type="text" placeholder="Auto-detected WebSocket host" />
+    </div>
+    <div class="row status-line">
+      <span class="label">Resolved</span>
+      <span id="wsUrlResolved">detecting…</span>
     </div>
     <div class="row">
       <label for="scanUrl">Scan URL</label>
