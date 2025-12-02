@@ -233,8 +233,7 @@ async function refreshSessionState() {
 async function testAi() {
   const statusEl = document.getElementById('ai-status');
   const rawEl = document.getElementById('ai-raw');
-  statusEl.textContent = 'Pinging Ollama…';
-  try {
+statusEl.textContent = 'Testing API connection...';  try {
     const status = await fetchJson('/ai/status');
     const message = status?.status || status?.message || 'See diagnostics';
     statusEl.textContent = message;
