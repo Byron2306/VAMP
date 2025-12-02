@@ -10,161 +10,16 @@
 const ICON_128 = 'icons/icon128.png';
 const DAILY_ALARM = 'vampDailyNudge';
 const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
+const DEFAULT_WS_URL = chrome.runtime.getManifest()?.vamp_defaults?.wsUrl || 'http://127.0.0.1:8080';
 
-// ---------- Socket.IO background management ----------
-let socket = null;
-let socketIoReady = null;
-let wsStatus = { status: 'disconnected', url: null, detail: {} };
-let reconnectDelayMs = 1000;
+// ---------- WebSocket state (shared) ----------
+let ws = null;
+let wsUrl = DEFAULT_WS_URL;
+let wsStatus = 'idle';
 let reconnectTimer = null;
 let heartbeatTimer = null;
-
-function ensureSocketIOLoaded() {
-  if (typeof io !== 'undefined') {
-    return Promise.resolve(io);
-  }
-
-  if (socketIoReady) return socketIoReady;
-
-  socketIoReady = new Promise((resolve, reject) => {
-    try {
-      importScripts('vendor/socket.io.min.js');
-      if (typeof io !== 'undefined') {
-        resolve(io);
-        return;
-      }
-      reject(new Error('Socket.IO library unavailable'));
-    } catch (err) {
-      reject(err);
-    }
-  });
-
-  return socketIoReady;
-}
-
-function emitWsStatus(status, detail = {}) {
-  wsStatus = { status, url: wsStatus.url, detail };
-  chrome.runtime.sendMessage({ type: 'WS_STATUS', status, detail, url: wsStatus.url }).catch?.(() => {});
-}
-
-function stopReconnect() {
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer);
-    reconnectTimer = null;
-  }
-}
-
-function scheduleReconnect(reason = '') {
-  stopReconnect();
-  reconnectTimer = setTimeout(() => {
-    emitWsStatus('reconnecting', { reason, delay: reconnectDelayMs });
-    reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
-    if (wsStatus.url) {
-      connectSocket(wsStatus.url);
-    }
-  }, reconnectDelayMs);
-}
-
-function stopHeartbeatBroadcast() {
-  if (heartbeatTimer) {
-    clearInterval(heartbeatTimer);
-    heartbeatTimer = null;
-  }
-}
-
-function startHeartbeatBroadcast() {
-  stopHeartbeatBroadcast();
-  heartbeatTimer = setInterval(() => {
-    if (socket && socket.connected) {
-      emitWsStatus('connected', { heartbeat: Date.now() });
-    }
-  }, 15000);
-}
-
-function disconnectSocket(manual = false) {
-  stopReconnect();
-  stopHeartbeatBroadcast();
-  if (socket) {
-    try { socket.disconnect(); } catch (_) {}
-    socket = null;
-  }
-  emitWsStatus('disconnected', { manual });
-}
-
-async function connectSocket(url) {
-  stopReconnect();
-  stopHeartbeatBroadcast();
-  wsStatus.url = url;
-
-  emitWsStatus('connecting', {});
-
-  try {
-    await ensureSocketIOLoaded();
-  } catch (err) {
-    emitWsStatus('error', { message: err?.message || String(err) });
-    scheduleReconnect('load_failed');
-    return;
-  }
-
-  if (socket) {
-    try { socket.disconnect(); } catch (_) {}
-    socket = null;
-  }
-
-  try {
-    socket = io(url, {
-      reconnection: false,
-      transports: ['websocket', 'polling']
-    });
-  } catch (err) {
-    emitWsStatus('error', { message: err?.message || String(err) });
-    scheduleReconnect('create_failed');
-    return;
-  }
-
-  socket.on('connect', () => {
-    reconnectDelayMs = 1000;
-    emitWsStatus('connected', {});
-    startHeartbeatBroadcast();
-  });
-
-  socket.on('disconnect', (reason) => {
-    emitWsStatus('disconnected', { reason });
-    stopHeartbeatBroadcast();
-    scheduleReconnect(reason || 'disconnect');
-  });
-
-  socket.on('connect_error', (error) => {
-    emitWsStatus('error', { message: error?.message || String(error) });
-    scheduleReconnect('connect_error');
-  });
-
-  socket.io?.on?.('reconnect_attempt', (attempt) => {
-    emitWsStatus('reconnecting', { attempt });
-  });
-
-  socket.on('error', (error) => {
-    emitWsStatus('error', { message: error?.message || String(error) });
-  });
-
-  socket.on('message', (data) => {
-    const payload = typeof data === 'string' ? data : JSON.stringify(data);
-    chrome.runtime.sendMessage({ type: 'WS_MESSAGE', data: payload }).catch?.(() => {});
-  });
-}
-
-function sendViaSocket(payload) {
-  if (!socket || !socket.connected) {
-    return false;
-  }
-  try {
-    socket.emit('message', payload);
-    return true;
-  } catch (err) {
-    emitWsStatus('error', { message: err?.message || String(err) });
-    return false;
-  }
-}
+let reconnectDelayMs = 1000;
+let lastPongAt = Date.now();
 
 // ---------- Install / Update ----------
 chrome.runtime.onInstalled.addListener(() => {
@@ -180,6 +35,12 @@ chrome.runtime.onInstalled.addListener(() => {
     },
     vamp_evidence: []
   }).catch?.(() => {});
+
+  connectWebSocket();
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  connectWebSocket();
 });
 
 // ---------- Alarms ----------
@@ -214,6 +75,138 @@ async function playSound(type = 'done') {
   chrome.runtime.sendMessage({ action: 'OFFSCREEN_PLAY', type });
 }
 
+// ---------- WebSocket helpers ----------
+function toWebSocketUrl(url) {
+  if (!url) return DEFAULT_WS_URL.replace(/^http/, 'ws');
+  let base = url.trim();
+
+  if (!/^wss?:\/\//.test(base)) {
+    base = base.startsWith('http') ? base.replace(/^http/, 'ws') : `ws://${base.replace(/^\//, '')}`;
+  } else {
+    base = base.replace(/^http/, 'ws');
+  }
+
+  const cleaned = base.endsWith('/') ? base.slice(0, -1) : base;
+  if (cleaned.includes('socket.io')) return cleaned;
+  return `${cleaned}/socket.io/?EIO=4&transport=websocket`;
+}
+
+async function getPersistedWsUrl() {
+  try {
+    const result = await chrome.storage.local.get(['vamp_settings']);
+    const stored = result?.vamp_settings?.wsUrl;
+    return stored || DEFAULT_WS_URL;
+  } catch (_) {
+    return DEFAULT_WS_URL;
+  }
+}
+
+function broadcastWsEvent(event, extra = {}) {
+  wsStatus = event;
+  chrome.runtime.sendMessage({
+    type: 'VAMP_WS_EVENT',
+    event,
+    url: wsUrl,
+    ...extra
+  }).catch?.(() => {});
+}
+
+function clearHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeat() {
+  clearHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      connectWebSocket(wsUrl);
+      return;
+    }
+
+    try {
+      ws.send('2'); // engine.io ping
+    } catch (_) {
+      try { ws.close(); } catch {} // force reconnect path
+    }
+
+    if (Date.now() - lastPongAt > 30000) {
+      try { ws.close(); } catch {}
+    }
+  }, 10000);
+}
+
+function scheduleReconnect(reason = '') {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    connectWebSocket(wsUrl);
+    reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 30000);
+  }, reconnectDelayMs);
+
+  if (reason) {
+    console.debug('[VAMP][SW] scheduling reconnect due to', reason, 'in', reconnectDelayMs, 'ms');
+  }
+}
+
+async function connectWebSocket(providedUrl) {
+  clearTimeout(reconnectTimer);
+  const targetUrl = providedUrl || await getPersistedWsUrl();
+  wsUrl = targetUrl || DEFAULT_WS_URL;
+  const endpoint = toWebSocketUrl(wsUrl);
+
+  try {
+    if (ws) {
+      ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+      ws.close();
+    }
+
+    ws = new WebSocket(endpoint);
+  } catch (err) {
+    broadcastWsEvent('error', { message: err?.message || 'Failed to create WebSocket' });
+    scheduleReconnect('construct-error');
+    return;
+  }
+
+  broadcastWsEvent('connecting');
+
+  ws.onopen = () => {
+    reconnectDelayMs = 1000;
+    lastPongAt = Date.now();
+    broadcastWsEvent('connect');
+    startHeartbeat();
+    try { ws.send('40'); } catch (_) {}
+  };
+
+  ws.onclose = (event) => {
+    clearHeartbeat();
+    broadcastWsEvent('disconnect', { code: event?.code, reason: event?.reason });
+    scheduleReconnect('close');
+  };
+
+  ws.onerror = (event) => {
+    broadcastWsEvent('error', { message: event?.message || 'WebSocket error' });
+  };
+
+  ws.onmessage = (messageEvent) => {
+    const data = messageEvent?.data;
+    if (data === '3' || data === '3probe') {
+      lastPongAt = Date.now();
+      return;
+    }
+
+    if (typeof data === 'string' && data.startsWith('0')) {
+      try { ws?.send('40'); } catch (_) {}
+      return;
+    }
+
+    if (data === '40') {
+      broadcastWsEvent('connect');
+    }
+  };
+}
+
 // ---------- Enhanced evidence state management ----------
 chrome.storage.onChanged.addListener((changes, namespace) => {
   if (namespace === 'local' && changes.vamp_evidence) {
@@ -234,6 +227,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || typeof msg !== 'object') {
       sendResponse?.({ ok: false, error: 'Bad message' });
+      return;
+    }
+
+    // 0) WebSocket status / ensure connected
+    if (msg.type === 'VAMP_WS_STATUS') {
+      connectWebSocket(msg.url || wsUrl);
+      sendResponse?.({
+        ok: true,
+        status: wsStatus,
+        readyState: ws?.readyState ?? WebSocket.CLOSED,
+        url: wsUrl
+      });
       return;
     }
 
@@ -344,6 +349,146 @@ chrome.notifications.onClicked.addListener(() => {
 self.addEventListener('unhandledrejection', (ev) => {
   console.warn('Unhandled promise rejection in service-worker:', ev.reason);
 });
+
+// ---------- Socket.IO connectivity (NEW) ----------
+let socket = null;
+let socketIoPromise = null;
+let reconnectTimer = null;
+let heartbeatTimer = null;
+let reconnectDelayMs = 1000;
+let lastWsUrl = DEFAULT_WS_URL;
+
+async function resolveWsUrl() {
+  try {
+    const { vamp_settings: settings } = await chrome.storage.local.get(['vamp_settings']);
+    const stored = settings?.wsUrl;
+    if (typeof stored === 'string' && stored.trim()) {
+      return stored.trim();
+    }
+  } catch (err) {
+    console.warn('Unable to read wsUrl from storage', err);
+  }
+  return DEFAULT_WS_URL;
+}
+
+async function loadSocketIOLibrary() {
+  if (socketIoPromise) return socketIoPromise;
+
+  socketIoPromise = (async () => {
+    const src = chrome.runtime.getURL('vendor/socket.io.min.js');
+    const res = await fetch(src);
+    const code = await res.text();
+    const factory = new Function('self', `${code}; return self.io;`);
+    const ioClient = factory(self);
+    if (!ioClient) {
+      throw new Error('Socket.IO client failed to initialise');
+    }
+    return ioClient;
+  })();
+
+  return socketIoPromise;
+}
+
+function emitWsStatus(status, details = {}) {
+  chrome.runtime.sendMessage({
+    type: 'WS_STATUS',
+    status,
+    ...details
+  }).catch?.(() => {});
+}
+
+function emitWsEvent(event, payload = {}) {
+  chrome.runtime.sendMessage({
+    type: 'WS_EVENT',
+    event,
+    payload
+  }).catch?.(() => {});
+}
+
+function stopHeartbeatLoop() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+function startHeartbeatLoop() {
+  stopHeartbeatLoop();
+  heartbeatTimer = setInterval(() => {
+    emitWsStatus('heartbeat', {
+      url: lastWsUrl,
+      connected: Boolean(socket?.connected),
+      ts: Date.now()
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+}
+
+function scheduleReconnect(reason = 'retry') {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    initialiseSocket(reason).catch(() => {});
+    reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.5), RECONNECT_MAX_DELAY_MS);
+  }, reconnectDelayMs);
+
+  emitWsStatus('reconnecting', {
+    delayMs: reconnectDelayMs,
+    reason
+  });
+}
+
+async function initialiseSocket(reason = 'manual') {
+  clearTimeout(reconnectTimer);
+  const url = await resolveWsUrl();
+  lastWsUrl = url;
+  emitWsStatus('connecting', { url, reason });
+
+  const ioClient = await loadSocketIOLibrary();
+
+  try {
+    socket?.removeAllListeners?.();
+    socket?.disconnect?.();
+  } catch (err) {
+    console.warn('Error cleaning previous socket', err);
+  }
+
+  socket = ioClient(url, {
+    reconnection: false,
+    transports: ['websocket', 'polling']
+  });
+
+  socket.on('connect', () => {
+    reconnectDelayMs = 1000;
+    emitWsStatus('connected', { url });
+    startHeartbeatLoop();
+  });
+
+  socket.on('connect_error', (error) => {
+    emitWsStatus('error', { message: error?.message || 'connect_error' });
+    scheduleReconnect('connect_error');
+  });
+
+  socket.on('disconnect', (why) => {
+    emitWsStatus('disconnected', { reason: why });
+    stopHeartbeatLoop();
+    scheduleReconnect('disconnect');
+  });
+
+  socket.onAny((event, data) => {
+    emitWsEvent(event, data);
+  });
+}
+
+function teardownSocket() {
+  clearTimeout(reconnectTimer);
+  stopHeartbeatLoop();
+  try {
+    socket?.removeAllListeners?.();
+    socket?.disconnect?.();
+  } catch (err) {
+    console.warn('Error tearing down socket', err);
+  }
+  socket = null;
+}
 
 // ---------- Optional keep-alive (disabled) ----------
 // chrome.alarms.create('vamp-keepalive', { periodInMinutes: 4 });

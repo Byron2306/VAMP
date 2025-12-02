@@ -4,6 +4,7 @@
 
   const els = {
     wsUrl:        $('wsUrl'),
+    wsUrlResolved: $('wsUrlResolved'),
     wsStatus:     $('wsStatus'),
     email:        $('email'),
     name:         $('name'),
@@ -49,13 +50,17 @@
   };
 
   // ---------- State Management ----------
-  let wsUrlCurrent = 'http://127.0.0.1:8080';
+  const PROD_WS_FALLBACK = 'https://vamp.nwu.ac.za';
+  const LOCAL_WS_PORT = 8080;
+  let wsUrlCurrent = PROD_WS_FALLBACK;
+  let reconnectTimer = null;
+  let reconnectDelayMs = 1000;
   let isBusy = false;
   let lastPhase = 'idle';
   let lastPct = 0;
   let heartbeatTimer = null;
   let scanTimeout = null;
-  let wsStatusCache = { status: 'disconnected', detail: {} };
+  let socketHandlersRegistered = false;
   
   // Evidence state
   let currentEvidence = [];
@@ -65,6 +70,50 @@
   let askConversation = [];
   const toolEvents = [];
   const TOOL_EVENT_LIMIT = 30;
+
+  // ---------- Configuration ----------
+  async function loadExtensionConfig() {
+    const manifestConfig = chrome?.runtime?.getManifest?.()?.vampConfig || {};
+    const configUrl = chrome?.runtime?.getURL ? chrome.runtime.getURL('config.json') : null;
+    let fileConfig = {};
+
+    if (configUrl) {
+      try {
+        const res = await fetch(configUrl);
+        if (res.ok) {
+          fileConfig = await res.json();
+        }
+      } catch (err) {
+        console.warn('[VAMP] Unable to load extension config.json', err);
+      }
+    }
+
+    const apiBaseUrl = manifestConfig.apiBaseUrl || manifestConfig.api_base_url || fileConfig.apiBaseUrl || fileConfig.api_base_url || '';
+    const wsBaseUrl = manifestConfig.wsBaseUrl || manifestConfig.ws_base_url || fileConfig.wsBaseUrl || fileConfig.ws_base_url || '';
+
+    return { apiBaseUrl, wsBaseUrl };
+  }
+
+  function deriveWsUrlFromApi(apiBaseUrl) {
+    if (!apiBaseUrl) return '';
+    try {
+      const u = new URL(apiBaseUrl);
+      return u.origin;
+    } catch (err) {
+      console.warn('[VAMP] Could not derive WS URL from apiBaseUrl', err);
+      return '';
+    }
+  }
+
+  async function resolveDefaultWsUrl() {
+    if (wsUrlDefault) return wsUrlDefault;
+
+    const cfg = await loadExtensionConfig();
+    wsUrlDefault = cfg.wsBaseUrl || deriveWsUrlFromApi(cfg.apiBaseUrl) || 'http://localhost:8080';
+    wsUrlCurrent = wsUrlDefault;
+
+    return wsUrlDefault;
+  }
 
   // ---------- Enhanced UI Helpers ----------
   function setStatus(text, type = 'disconnected') {
@@ -134,6 +183,22 @@
       handleMessage(msg.data);
     }
   });
+
+  function formatEndpoint(url) {
+    if (!url) return '';
+    try {
+      const parsed = new URL(url);
+      return parsed.host || url;
+    } catch (err) {
+      return url.replace(/^https?:\/\//, '');
+    }
+  }
+
+  function setConnectionStatus(text, type = 'disconnected') {
+    const endpoint = formatEndpoint(wsUrlCurrent || wsUrlDefault);
+    const label = endpoint ? `${text} • ${endpoint}` : text;
+    setStatus(label, type);
+  }
 
   function setProgressPct(pct, immediate = false) {
     const v = Math.max(0, Math.min(100, Number(pct) || 0));
@@ -639,10 +704,42 @@
     return obj;
   }
 
-  function restoreSettings() {
+  function getBuildWsUrl() {
     try {
-      chrome.storage?.local?.get(['vamp_settings'], (res) => {
-        const s = res?.vamp_settings || {};
+      if (globalThis?.VAMP_WS_URL) return globalThis.VAMP_WS_URL;
+      if (globalThis?.__VAMP_WS_URL__) return globalThis.__VAMP_WS_URL__;
+      if (typeof process !== 'undefined' && process?.env?.VAMP_WS_URL) return process.env.VAMP_WS_URL;
+    } catch {}
+    return '';
+  }
+
+  function deriveActiveTabWsUrl() {
+    return new Promise((resolve) => {
+      const fallback = () => resolve('');
+      try {
+        if (!chrome?.tabs?.query) return fallback();
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs = []) => {
+          const activeUrl = tabs?.[0]?.url;
+          if (!activeUrl) return fallback();
+          try {
+            const parsed = new URL(activeUrl);
+            const isLocal = ['localhost', '127.0.0.1'].includes(parsed.hostname);
+            const port = parsed.port || (isLocal ? String(LOCAL_WS_PORT) : '');
+            const portPart = port ? `:${port}` : '';
+            resolve(`${parsed.protocol}//${parsed.hostname}${portPart}`);
+          } catch {
+            fallback();
+          }
+        });
+      } catch {
+        fallback();
+      }
+    });
+  }
+
+  function restoreSettings() {
+    return new Promise((resolve) => {
+      const applySettings = (s = {}) => {
         if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
         if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
         if (els.email && s.email)  els.email.value = s.email;
@@ -651,10 +748,39 @@
         if (els.year  && s.year)   els.year.value  = String(s.year);
         if (els.month && s.month)  els.month.value = String(s.month);
         if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
-        if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-      });
-    } catch {
-      if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
+        resolve(s);
+      };
+
+      try {
+        chrome.storage?.local?.get(['vamp_settings'], (res) => {
+          applySettings(res?.vamp_settings || {});
+        });
+      } catch {
+        applySettings();
+      }
+    });
+  }
+
+  async function resolveInitialWsUrl(stored = {}) {
+    if (stored.wsUrl) return stored.wsUrl;
+
+    const buildUrl = getBuildWsUrl();
+    if (buildUrl) return buildUrl;
+
+    const tabUrl = await deriveActiveTabWsUrl();
+    if (tabUrl) return tabUrl;
+
+    return PROD_WS_FALLBACK;
+  }
+
+  function applyResolvedWsUrl(url) {
+    wsUrlCurrent = url || PROD_WS_FALLBACK;
+    if (els.wsUrl) {
+      els.wsUrl.value = wsUrlCurrent;
+    }
+    if (els.wsUrlResolved) {
+      els.wsUrlResolved.textContent = wsUrlCurrent;
+      els.wsUrlResolved.title = wsUrlCurrent;
     }
   }
 
@@ -709,43 +835,93 @@
   }
 
   // ---------- WebSocket Management ----------
+  function resolveActiveWsUrl() {
+    const manual = els.wsUrl?.value?.trim();
+    if (manual) return manual;
+    if (wsUrlCurrent) return wsUrlCurrent;
+    return wsUrlDefault;
+  }
+
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+      logAnswer('Attempting to reconnect...', 'info');
+      connectWS(resolveActiveWsUrl());
+      reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
+    }, reconnectDelayMs);
+  }
+
+  function ensureSocketHandlers() {
+    if (socketHandlersRegistered) return;
+    socketHandlersRegistered = true;
+
+    SocketIOManager.on('connect', () => {
+      setConnectionStatus('Connected', 'connected');
+      reconnectDelayMs = 1000;
+      enableControls(true);
+      logAnswer('WebSocket connected successfully', 'success');
+
+      try {
+        chrome.storage?.local?.get(['vamp_settings'], (res) => {
+          const s = res?.vamp_settings || {};
+          s.wsUrl = els.wsUrl?.value?.trim() || wsUrlCurrent;
+          chrome.storage?.local?.set({ vamp_settings: s });
+        });
+      } catch {}
+    });
+
+    SocketIOManager.on('message', (ev) => handleMessage(ev.data));
+
+    SocketIOManager.on('error', () => {
+      setConnectionStatus('Connection Error', 'error');
+      logAnswer('WebSocket connection error', 'error');
+    });
+
+    SocketIOManager.on('disconnect', (event) => {
+      setConnectionStatus('Disconnected', 'disconnected');
+      if (event?.code !== 1000) {
+        logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
+      }
+      if (!document.hidden) scheduleReconnect();
+    });
+  }
+
   function connectWS(url) {
-    wsUrlCurrent = url || wsUrlCurrent;
-    setStatus('Connecting...', 'scanning');
+    clearTimeout(reconnectTimer);
+    wsUrlCurrent = url || wsUrlCurrent || wsUrlDefault;
+    setConnectionStatus('Connecting...', 'scanning');
+    ensureSocketHandlers();
+
     try {
-      chrome.runtime?.sendMessage({ type: 'WS_CONNECT', url: wsUrlCurrent }, (res) => {
-        if (chrome.runtime?.lastError) {
-          setStatus('Connection Error', 'error');
-          logAnswer(`Connection error: ${chrome.runtime.lastError.message}`, 'error');
-          return;
-        }
-        if (!res?.ok) {
-          setStatus('Connection Error', 'error');
-          logAnswer('Background rejected connection request', 'error');
-        }
-      });
+      SocketIOManager.disconnect();
     } catch (err) {
-      setStatus('Connection Error', 'error');
-      logAnswer(`Connection error: ${err.message}`, 'error');
+      console.warn('[SocketIO] Disconnect failed', err);
     }
+
+    SocketIOManager.connect(wsUrlCurrent).catch((e) => {
+      setStatus('Connection Failed', 'error');
+      logAnswer(`Connection error: ${e?.message || e}`, 'error');
+      scheduleReconnect();
+    });
   }
 
   function sendWS(obj) {
-    if (wsStatusCache.status !== 'connected') {
-      logAnswer('Not connected - asking background to reconnect', 'warning');
-      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+    if (!SocketIOManager.isConnected()) {
+      logAnswer('Not connected - reconnecting...', 'warning');
+      connectWS(resolveActiveWsUrl());
+      setTimeout(() => {
+        if (SocketIOManager.isConnected()) {
+          SocketIOManager.send(obj);
+          logAnswer('Command sent after reconnect', 'success');
+        } else {
+          logAnswer('Failed to reconnect for command', 'error');
+        }
+      }, 500);
+      return;
     }
 
     try {
-      chrome.runtime?.sendMessage({ type: 'WS_SEND', payload: obj }, (res) => {
-        if (chrome.runtime?.lastError) {
-          logAnswer('Failed to send command: background unavailable', 'error');
-          return;
-        }
-        if (!res?.ok) {
-          logAnswer('Failed to send command: socket not connected', 'error');
-        }
-      });
+      SocketIOManager.send(obj);
     } catch (e) {
       logAnswer(`Failed to send command: ${e.message}`, 'error');
     }
@@ -843,7 +1019,7 @@
         const toolList = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         recordToolFeedback(toolList, 'Brain Scan');
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         stopHeartbeat();
         clearTimeout(scanTimeout);
         playOpenSound();
@@ -861,7 +1037,7 @@
         setScanNote(data.note || 'Office365 scan completed');
         logAnswer('✅ Office365 scan finished', 'success');
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         stopHeartbeat();
         clearTimeout(scanTimeout);
         
@@ -908,7 +1084,7 @@
 
         if (mode !== 'brain_scan' || !isBusy) {
           enableControls(true);
-          setStatus('Connected', 'connected');
+          setConnectionStatus('Connected', 'connected');
         }
         break;
       }
@@ -920,7 +1096,7 @@
           logAnswer(`📋 ${answer}`, 'info');
         }
         enableControls(true);
-        setStatus('Connected', 'connected');
+        setConnectionStatus('Connected', 'connected');
         break;
       }
 
@@ -1197,116 +1373,122 @@
 
   // ---------- Enhanced Initialization ----------
   document.addEventListener('DOMContentLoaded', () => {
-    playOpenSound();
-    ensureYearMonth();
-    restoreSettings();
-    renderChatHistory();
-    renderToolFeedback();
-    updateBrainSummary('', {});
-
-    // Enhanced input handling
-    els.askText?.addEventListener('focus', () => {
-      els.askText.style.borderColor = 'var(--red)';
-      els.askText.style.boxShadow = 'var(--red-glow)';
-    });
-    
-    els.askText?.addEventListener('blur', () => {
-      els.askText.style.borderColor = '';
-      els.askText.style.boxShadow = '';
-    });
-
-    // Auto-resize textarea
-    els.askText?.addEventListener('input', function() {
-      this.style.height = 'auto';
-      this.style.height = Math.min(this.scrollHeight, 200) + 'px';
-    });
-
-    // Initialize connection
-    if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent;
-    } else if (els.wsUrl) {
-      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent;
-    }
-
-    connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-    requestWsStatus();
-
-    // Event listeners
-    els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
-    els.btnState?.addEventListener('click', (e) => { e.preventDefault(); onGetState(); });
-    els.btnScan?.addEventListener('click', (e) => { e.preventDefault(); onScanActive(); });
-    els.btnScanBrain?.addEventListener('click', (e) => { e.preventDefault(); onScanBrain(); });
-    els.btnFinalise?.addEventListener('click', (e) => { e.preventDefault(); onFinaliseMonth(); });
-    els.btnExport?.addEventListener('click', (e) => { e.preventDefault(); onExportMonth(); });
-    els.btnCompile?.addEventListener('click', (e) => { e.preventDefault(); onCompileYear(); });
-    els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
-    els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
-    els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
-
-    // Evidence display listeners
-    els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
-    els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
-    els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
-
-    // Close modal when clicking outside
-    els.evidenceModal?.addEventListener('click', (e) => {
-      if (e.target === els.evidenceModal) {
-        hideEvidenceDetails();
-      }
-    });
-
-    // Table sorting
-    const tableHeaders = document.querySelectorAll('.evidence-table th[data-sort]');
-    tableHeaders.forEach(header => {
-      header.addEventListener('click', () => {
-        const column = header.getAttribute('data-sort');
-        const currentDirection = header.classList.contains('sort-asc') ? 'asc' : 'desc';
-        const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
-        
-        // Update header classes
-        tableHeaders.forEach(h => {
-          h.classList.remove('sort-asc', 'sort-desc');
-        });
-        header.classList.add(`sort-${newDirection}`);
-        
-        // Update sort state
-        currentSort = { column, direction: newDirection };
-        
-        // Re-sort and update display
-        updateEvidenceDisplay(currentEvidence);
-      });
-    });
-
-    // Settings persistence
-    [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
-      if (!el) return;
-      const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
-      el.addEventListener(evt, saveSettings);
-    });
-
-    // Manual reconnect when URL changes
-    els.wsUrl?.addEventListener('blur', () => {
-      const val = els.wsUrl.value.trim();
-      if (val && val !== wsUrlCurrent) {
-        wsUrlCurrent = val;
-        logAnswer('WebSocket URL updated, reconnecting...', 'info');
-        connectWS(wsUrlCurrent);
-        saveSettings();
-      }
-    });
-
-    // Enhanced brand icon interaction
-    els.brandIcon?.addEventListener('click', () => {
+    (async () => {
       playOpenSound();
-      logAnswer('VAMP system activated', 'success');
-    });
+      ensureYearMonth();
+      const storedSettings = await restoreSettings();
+      renderChatHistory();
+      renderToolFeedback();
+      updateBrainSummary('', {});
 
-    // Initial evidence load
-    setTimeout(() => {
-      if (wsStatusCache.status === 'connected') {
-        refreshEvidenceDisplay();
-      }
-    }, 1000);
+      const resolvedUrl = await resolveInitialWsUrl(storedSettings);
+      applyResolvedWsUrl(resolvedUrl);
+      logAnswer(`Resolved WebSocket URL: ${wsUrlCurrent}`, 'info');
+
+      // Enhanced input handling
+      els.askText?.addEventListener('focus', () => {
+        els.askText.style.borderColor = 'var(--red)';
+        els.askText.style.boxShadow = 'var(--red-glow)';
+      });
+
+      els.askText?.addEventListener('blur', () => {
+        els.askText.style.borderColor = '';
+        els.askText.style.boxShadow = '';
+      });
+
+      // Auto-resize textarea
+      els.askText?.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+      });
+
+      connectWS(wsUrlCurrent);
+
+      // Event listeners
+      els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
+      els.btnState?.addEventListener('click', (e) => { e.preventDefault(); onGetState(); });
+      els.btnScan?.addEventListener('click', (e) => { e.preventDefault(); onScanActive(); });
+      els.btnScanBrain?.addEventListener('click', (e) => { e.preventDefault(); onScanBrain(); });
+      els.btnFinalise?.addEventListener('click', (e) => { e.preventDefault(); onFinaliseMonth(); });
+      els.btnExport?.addEventListener('click', (e) => { e.preventDefault(); onExportMonth(); });
+      els.btnCompile?.addEventListener('click', (e) => { e.preventDefault(); onCompileYear(); });
+      els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
+      els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
+      els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
+
+      // Evidence display listeners
+      els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
+      els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
+      els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
+
+      // Close modal when clicking outside
+      els.evidenceModal?.addEventListener('click', (e) => {
+        if (e.target === els.evidenceModal) {
+          hideEvidenceDetails();
+        }
+      });
+
+      // Table sorting
+      const tableHeaders = document.querySelectorAll('.evidence-table th[data-sort]');
+      tableHeaders.forEach(header => {
+        header.addEventListener('click', () => {
+          const column = header.getAttribute('data-sort');
+          const currentDirection = header.classList.contains('sort-asc') ? 'asc' : 'desc';
+          const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+
+          // Update header classes
+          tableHeaders.forEach(h => {
+            h.classList.remove('sort-asc', 'sort-desc');
+          });
+          header.classList.add(`sort-${newDirection}`);
+
+          // Update sort state
+          currentSort = { column, direction: newDirection };
+
+          // Re-sort and update display
+          updateEvidenceDisplay(currentEvidence);
+        });
+      });
+
+      // Settings persistence
+      [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
+        if (!el) return;
+        const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
+        el.addEventListener(evt, saveSettings);
+      });
+
+      // Manual reconnect when URL changes
+      els.wsUrl?.addEventListener('blur', () => {
+        const val = els.wsUrl.value.trim();
+        if (val && val !== wsUrlCurrent) {
+          wsUrlCurrent = val;
+          applyResolvedWsUrl(wsUrlCurrent);
+          logAnswer('WebSocket URL updated, reconnecting...', 'info');
+          connectWS(wsUrlCurrent);
+          saveSettings();
+        }
+      });
+
+      // Enhanced brand icon interaction
+      els.brandIcon?.addEventListener('click', () => {
+        playOpenSound();
+        logAnswer('VAMP system activated', 'success');
+      });
+
+      // Initial evidence load
+      setTimeout(() => {
+        if (SocketIOManager.isConnected()) {
+          refreshEvidenceDisplay();
+        }
+      }, 1000);
+    })();
+  });
+
+  window.addEventListener('unload', () => {
+    stopHeartbeat();
+    clearTimeout(reconnectTimer);
+    clearTimeout(scanTimeout);
+    SocketIOManager.disconnect();
   });
 })();
 
