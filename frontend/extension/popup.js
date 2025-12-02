@@ -48,8 +48,31 @@
     detailRawTimestamp:   $('detailRawTimestamp'),
   };
 
-  // ---------- State Management ----------
-  let wsUrlCurrent = 'http://127.0.0.1:8080';
+  // ---------- Configuration & State Management ----------
+  const DEFAULT_PROD_WS_URL = 'https://vamp.nwu.ac.za';
+
+  function getConfigWsUrl() {
+    const sources = [
+      () => globalThis?.VAMP_CONFIG?.wsUrl,
+      () => globalThis?.__VAMP_CONFIG__?.wsUrl,
+      () => globalThis?.ENV?.VAMP_WS_URL || globalThis?.ENV?.wsUrl,
+      () => globalThis?.process?.env?.VAMP_WS_URL,
+    ];
+
+    for (const pick of sources) {
+      try {
+        const candidate = pick();
+        if (candidate && typeof candidate === 'string') {
+          return candidate.trim();
+        }
+      } catch {}
+    }
+    return '';
+  }
+
+  const seededWsUrl = getConfigWsUrl();
+
+  let wsUrlCurrent = seededWsUrl || DEFAULT_PROD_WS_URL;
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let isBusy = false;
@@ -581,22 +604,36 @@
   }
 
   function restoreSettings() {
-    try {
-      chrome.storage?.local?.get(['vamp_settings'], (res) => {
-        const s = res?.vamp_settings || {};
-        if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
-        if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
-        if (els.email && s.email)  els.email.value = s.email;
-        if (els.name  && s.name)   els.name.value  = s.name;
-        if (els.org   && s.org)    els.org.value   = s.org;
-        if (els.year  && s.year)   els.year.value  = String(s.year);
-        if (els.month && s.month)  els.month.value = String(s.month);
-        if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+    return new Promise((resolve) => {
+      const applyFallback = () => {
         if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-      });
-    } catch {
-      if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-    }
+        resolve();
+      };
+
+      try {
+        const getSettings = chrome?.storage?.local?.get;
+        if (!getSettings) {
+          applyFallback();
+          return;
+        }
+
+        getSettings.call(chrome.storage.local, ['vamp_settings'], (res) => {
+          const s = res?.vamp_settings || {};
+          if (els.wsUrl && s.wsUrl)  { els.wsUrl.value = s.wsUrl; wsUrlCurrent = s.wsUrl; }
+          if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
+          if (els.email && s.email)  els.email.value = s.email;
+          if (els.name  && s.name)   els.name.value  = s.name;
+          if (els.org   && s.org)    els.org.value   = s.org;
+          if (els.year  && s.year)   els.year.value  = String(s.year);
+          if (els.month && s.month)  els.month.value = String(s.month);
+          if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+          if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
+          resolve();
+        });
+      } catch {
+        applyFallback();
+      }
+    });
   }
 
   // ---------- Month/Year Setup ----------
@@ -1183,10 +1220,28 @@
   document.addEventListener('DOMContentLoaded', () => {
     playOpenSound();
     ensureYearMonth();
-    restoreSettings();
     renderChatHistory();
     renderToolFeedback();
     updateBrainSummary('', {});
+
+    const hydrateAndConnect = () => {
+      if (els.wsUrl && !els.wsUrl.value) {
+        els.wsUrl.value = wsUrlCurrent;
+      } else if (els.wsUrl) {
+        wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent;
+      }
+
+      // Persist any hydrated defaults immediately so the background state stays in sync
+      saveSettings();
+      connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+    };
+
+    // Seed the UI with any build-time default so it is visible while storage loads
+    if (els.wsUrl && !els.wsUrl.value) {
+      els.wsUrl.value = wsUrlCurrent;
+    }
+
+    restoreSettings().then(hydrateAndConnect);
 
     // Enhanced input handling
     els.askText?.addEventListener('focus', () => {
@@ -1204,15 +1259,6 @@
       this.style.height = 'auto';
       this.style.height = Math.min(this.scrollHeight, 200) + 'px';
     });
-
-    // Initialize connection
-    if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent;
-    } else if (els.wsUrl) {
-      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent;
-    }
-
-    connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
 
     // Event listeners
     els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
