@@ -4,7 +4,6 @@
   <meta charset="utf-8" />
   <title>VAMP — NWU Brain</title>
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta name="vamp-ws-default" content="https://vamp.nwu.ac.za" />
   <!-- Enhanced dark gothic theme -->
   <link rel="stylesheet" href="popup.css" />
       <script src="vendor/socket.io.min.js"></script>
@@ -25,7 +24,11 @@
     <div class="section-title">Connection</div>
     <div class="row">
       <label for="wsUrl">Server URL</label>
-      <input id="wsUrl" type="text" value="http://127.0.0.1:8080" />
+      <input id="wsUrl" type="text" placeholder="Auto-detected WebSocket host" />
+    </div>
+    <div class="row status-line">
+      <span class="label">Resolved</span>
+      <span id="wsUrlResolved">detecting…</span>
     </div>
     <div class="row">
       <label for="scanUrl">Scan URL</label>

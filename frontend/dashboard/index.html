@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <meta name="vamp-api-root" content="" />
     <title>VAMP Agent Control Center</title>
     <meta name="vamp-api-root" content="https://vamp.nwu.ac.za/api" />
     <link rel="stylesheet" href="styles.css" />
@@ -19,7 +20,8 @@
           <input id="api-root" type="url" spellcheck="false" />
           <button id="save-api" aria-label="Save API base URL">Save</button>
         </div>
-        <small class="muted">Updates local storage only. Default adapts to your deployment. Active: <span id="api-active">detecting…</span></small>
+        <small class="muted">Overrides meta tag or env (VAMP_API_ROOT, VITE_VAMP_API_ROOT). Default: http://localhost:8080/api</small>
+        <small id="api-status" class="muted status-message"></small>
       </div>
       <button id="refresh" class="ghost">↻ Refresh</button>
     </header>

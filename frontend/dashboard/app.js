@@ -1,25 +1,40 @@
-function normalizeApiRoot(value) {
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    if (!['http:', 'https:'].includes(url.protocol)) return null;
-    return url.toString().replace(/\/$/, '');
-  } catch (err) {
-    console.warn('Invalid API root ignored:', value, err);
-    return null;
-  }
+const DEFAULT_API_ROOT = 'http://localhost:8080/api';
+
+function sanitizeApiRoot(value) {
+  if (!value || typeof value !== 'string') return DEFAULT_API_ROOT;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULT_API_ROOT;
+  const normalized = trimmed.replace(/\/+$/, '');
+  return normalized || DEFAULT_API_ROOT;
 }
 
-const metaApiRoot = document.querySelector('meta[name="vamp-api-root"]')?.content;
-const envApiRoot = window.VAMP_API_ROOT || window.VITE_VAMP_API_ROOT;
-const storedApiRoot = window.localStorage.getItem('vamp-api');
-const productionDefault = 'https://vamp.nwu.ac.za/api';
+function resolveEnvApiRoot() {
+  const importMeta = typeof import.meta !== 'undefined' ? import.meta : null;
+  const globalCandidates = [
+    globalThis?.VAMP_API_ROOT,
+    globalThis?.API_BASE_URL,
+    importMeta?.env?.VAMP_API_ROOT,
+    importMeta?.env?.VITE_VAMP_API_ROOT,
+    typeof process !== 'undefined' ? process?.env?.VAMP_API_ROOT : undefined,
+    typeof process !== 'undefined' ? process?.env?.VITE_VAMP_API_ROOT : undefined,
+  ];
+  return globalCandidates.find((value) => typeof value === 'string' && value.trim())?.trim();
+}
 
-let API_ROOT = normalizeApiRoot(storedApiRoot)
-  || normalizeApiRoot(envApiRoot)
-  || normalizeApiRoot(metaApiRoot)
-  || normalizeApiRoot(productionDefault)
-  || 'http://localhost:8080/api';
+function resolveMetaApiRoot() {
+  const meta = document.querySelector('meta[name="vamp-api-root"]');
+  const content = meta?.getAttribute('content');
+  return content?.trim();
+}
+
+function resolveApiRoot() {
+  const stored = window.localStorage.getItem('vamp-api');
+  const meta = resolveMetaApiRoot();
+  const env = resolveEnvApiRoot();
+  return sanitizeApiRoot(stored || meta || env || DEFAULT_API_ROOT);
+}
+
+let API_ROOT = resolveApiRoot();
 
 async function fetchJson(path, options = {}) {
   if (!API_ROOT) {
@@ -56,6 +71,44 @@ function setChipStatus(element, status) {
   }
 }
 
+function setStatusTone(element, tone = 'muted') {
+  if (!element) return;
+  element.classList.remove('success', 'warning', 'danger');
+  if (tone) {
+    element.classList.add(tone);
+  }
+}
+
+function updateApiStatus(message, tone = 'muted') {
+  const statusEl = document.getElementById('api-status');
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  setStatusTone(statusEl, tone);
+}
+
+async function probeApiRoot() {
+  updateApiStatus(`Checking ${API_ROOT}/health…`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(`${API_ROOT}/health`, { signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    const status = payload?.status || payload?.state || response.status || 'ok';
+    const message = payload?.message || 'API reachable';
+    if (!response.ok) {
+      throw new Error(`${status} ${message}`.trim());
+    }
+    updateApiStatus(`${message} (${status})`, 'success');
+    return true;
+  } catch (err) {
+    const reason = err.name === 'AbortError' ? 'timeout' : err.message;
+    updateApiStatus(`Cannot reach API. Update the base URL above or ensure the service is running. (${reason})`, 'danger');
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function formatDate(input) {
   if (!input) return '—';
   try {
@@ -69,6 +122,12 @@ function formatDate(input) {
   } catch (err) {
     return String(input);
   }
+}
+
+function reportConfigurationError(message) {
+  document.getElementById('health-summary').textContent = message;
+  document.getElementById('health-raw').textContent = message;
+  setChipStatus(document.getElementById('health-status'), 'error');
 }
 
 function updateConnectorsTable(connectors) {
@@ -125,12 +184,12 @@ function renderHealth(health) {
   setChipStatus(document.getElementById('health-status'), status);
 }
 
-async function refresh() {
+async function refresh(preloadedHealth = null) {
   const healthEl = document.getElementById('health-raw');
   healthEl.textContent = 'Refreshing…';
   try {
     const [health, connectors, auth, evidence, updates] = await Promise.all([
-      fetchJson('/health'),
+      preloadedHealth ? Promise.resolve(preloadedHealth) : fetchJson('/health'),
       fetchJson('/connectors'),
       fetchJson('/auth/sessions'),
       fetchJson('/evidence'),
@@ -206,27 +265,56 @@ async function applyUpdate() {
   renderUpdateSummary(result);
 }
 
+function validateAndPersistApiRoot(value) {
+  const trimmed = (value || '').trim();
+  if (!trimmed) return null;
+  try {
+    const normalized = normalizeApiRoot(trimmed);
+    window.localStorage.setItem('vamp-api', normalized);
+    setApiRoot(normalized);
+    document.getElementById('api-root').setCustomValidity('');
+    return normalized;
+  } catch (err) {
+    document.getElementById('api-root').setCustomValidity(err.message);
+    document.getElementById('api-root').reportValidity();
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
+}
+
+async function preflightHealthCheck() {
+  const summaryEl = document.getElementById('health-summary');
+  summaryEl.textContent = `Checking ${API_ROOT}…`;
+  try {
+    const health = await fetchJson('/health');
+    renderHealth(health);
+    document.getElementById('health-raw').textContent = JSON.stringify(health, null, 2);
+    return health;
+  } catch (err) {
+    reportConfigurationError(`Configuration error: ${err.message}`);
+    return null;
+  }
+}
+
 function persistApiRoot() {
   const input = document.getElementById('api-root');
-  const value = (input.value || '').trim();
-  const normalized = normalizeApiRoot(value);
-  if (!normalized) {
-    alert('Please provide a valid http(s) API base URL.');
-    return;
-  }
-  window.localStorage.setItem('vamp-api', normalized);
-  API_ROOT = normalized;
-  renderActiveApiRoot();
+  const value = sanitizeApiRoot(input.value);
+  window.localStorage.setItem('vamp-api', value);
+  API_ROOT = value;
+  input.value = API_ROOT;
+  updateApiStatus('Saved API base URL to local storage.', 'success');
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   const apiField = document.getElementById('api-root');
   apiField.value = API_ROOT;
-  renderActiveApiRoot();
+  updateApiStatus(`Using API base: ${API_ROOT}`);
 
   document.getElementById('save-api').addEventListener('click', () => {
     persistApiRoot();
-    refresh();
+    probeApiRoot().then((reachable) => {
+      if (reachable) refresh();
+    });
   });
   document.getElementById('refresh').addEventListener('click', refresh);
   document.getElementById('refresh-session').addEventListener('click', refreshSessionState);
@@ -246,5 +334,9 @@ window.addEventListener('DOMContentLoaded', () => {
       .catch((err) => alert(err.message));
   });
 
-  refresh();
+  probeApiRoot().then((reachable) => {
+    if (reachable) {
+      refresh();
+    }
+  });
 });
