@@ -83,5 +83,9 @@
   "options_ui": {
     "page": "popup.html",
     "open_in_tab": false
+  },
+
+  "vamp_defaults": {
+    "wsUrl": "http://127.0.0.1:8080"
   }
 }
