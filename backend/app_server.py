@@ -24,8 +24,7 @@ def create_app() -> tuple:
     # Configure SocketIO with proper CORS and transport settings
     socketio = SocketIO(
         app,
-        28
-                    cors_allowed_origins=os.getenv("VAMP_CORS_ALLOWED_ORIGINS", "http://localhost:8000"),
+        cors_allowed_origins=os.getenv("VAMP_CORS_ALLOWED_ORIGINS", "http://localhost:8000"),
         async_mode='threading',  # Use threading for compatibility
         ping_timeout=60,  # Increase timeout to 60 seconds
         ping_interval=25,  # Send ping every 25 seconds
@@ -49,7 +48,16 @@ def create_app() -> tuple:
     
     @app.get("/api/ping")
     def ping() -> Any:
-        return {"status": "ok", "state": agent_state().health().last_updated}
+        health = agent_state().health()
+        return {
+            "status": "ok",
+            "state": {
+                "connectors": health.connectors,
+                "auth_sessions": health.auth_sessions,
+                "evidence": health.evidence_summary,
+                "last_updated": health.last_updated,
+            },
+        }
     
     # WebSocket connection handler
     @socketio.on('connect')

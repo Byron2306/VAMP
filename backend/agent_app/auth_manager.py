@@ -1,18 +1,17 @@
-"""Agent-owned session-state orchestration (no OAuth token storage)."""
+"""Authentication/session storage for the VAMP agent app."""
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 import threading
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from . import AGENT_LOG_DIR, AGENT_STATE_DIR
-from .secrets_vault import SecretsVault82
-
+from .secrets_vault import SecretsVault
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +72,15 @@ class AuthSession:
         )
 
 
-60
-:
+class AuthManager:
     """Central orchestrator for Playwright session state (no OAuth)."""
 
     def __init__(self, vault: Optional[SecretsVault] = None, audit_file: Path = AGENT_LOG_DIR / "auth.log") -> None:
         self.vault = vault or SecretsVault.default()
         self.audit_file = audit_file
         self._sessions: Dict[str, AuthSession] = {}
+        self._lock = threading.Lock()
         self._load_sessions()
-                self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -158,45 +156,56 @@ class AuthSession:
             notes=notes,
         )
         key = self._session_key(service, identity)
-        self._sessions[key] = session
-        self._persist_sessions()
-        self._log_event(
-            AuthEvent(
-                timestamp=session.refreshed_at,
-                service=service,
-                identity=identity,
-                action="session_refreshed",
-                detail=notes or "Storage state refreshed",
+        with self._lock:
+            self._sessions[key] = session
+            self._persist_sessions()
+            self._log_event(
+                AuthEvent(
+                    timestamp=session.refreshed_at,
+                    service=service,
+                    identity=identity,
+                    action="session_refreshed",
+                    detail=notes,
+                )
             )
-        )
         return session
 
     def end_session(self, service: str, identity: str) -> None:
         key = self._session_key(service, identity)
-        if key in self._sessions:
-            del self._sessions[key]
+        with self._lock:
+            self._sessions.pop(key, None)
             self._persist_sessions()
-        self._log_event(
-            AuthEvent(
-                timestamp=time.time(),
-                service=service,
-                identity=identity,
-                action="session_ended",
-                detail="Session state removed per user request",
+            self._log_event(
+                AuthEvent(
+                    timestamp=time.time(),
+                    service=service,
+                    identity=identity,
+                    action="session_ended",
+                    detail="Session removed",
+                )
             )
-        )
 
     def get_session(self, service: str, identity: str) -> Optional[AuthSession]:
         return self._sessions.get(self._session_key(service, identity))
 
-    def store_password(self, service: str, identity: str, password: str, *, metadata: Optional[Dict[str, str]] = None) -> None:
+    # ------------------------------------------------------------------
+    # Secrets management
+    # ------------------------------------------------------------------
+    def store_password(
+        self,
+        service: str,
+        identity: str,
+        password: str,
+        *,
+        metadata: Optional[Dict[str, str]] = None,
+        username: Optional[str] = None,
+    ) -> None:
         meta = metadata or {}
         self.vault.set_secret(
             f"{service}:{identity}:password",
             password,
             metadata=meta,
         )
-        username = meta.get("username")
         if username:
             self.vault.set_secret(
                 f"{service}:{identity}:username",
@@ -217,10 +226,7 @@ class AuthSession:
         return self.vault.get_secret(f"{service}:{identity}:password")
 
     def username_for(self, service: str, identity: str) -> Optional[str]:
-        secret = self.vault.get_secret(f"{service}:{identity}:username")
-        if secret:
-            return secret
-        return None
+        return self.vault.get_secret(f"{service}:{identity}:username")
 
     def list_sessions(self) -> List[AuthSession]:
         return list(self._sessions.values())

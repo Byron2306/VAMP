@@ -147,17 +147,37 @@ if errorlevel 1 (
 )
 echo [OK] Playwright browsers installed successfully.
 echo.
-REM Verify Chrome installation is available
+
+REM ========================================================================
+REM [STEP 5] Verify Google Chrome Installation
+REM ========================================================================
+
+echo [5/7] Checking for Google Chrome...
 where chrome >nul 2>&1
 if errorlevel 1 (
-    REM Chrome not in PATH, check common install locations
+    echo [INFO] Chrome not found in PATH. Checking common install locations...
     if exist "%ProgramFiles%\Google\Chrome\Application\chrome.exe" (
-        echo [OK] Chrome found at %ProgramFiles%\Google\Chrome\Application\chrome.exe
+        set "CHROME_PATH=%ProgramFiles%\Google\Chrome\Application\chrome.exe"
     ) else if exist "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe" (
-        echo [OK] Chrome found at %ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe
+        set "CHROME_PATH=%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
     ) else (
-        echo [OK] Chrome found at: C:\Program Files (x86)\Google\Chrome\Application\chrome.exe
-    [STEP 6] Check and Start Ollama Server
+        set "CHROME_PATH="
+    )
+
+    if defined CHROME_PATH (
+        echo [OK] Chrome found at "!CHROME_PATH!"
+    ) else (
+        echo [WARNING] Chrome not detected automatically. Please ensure Chrome is installed and added to PATH.
+    )
+) else (
+    for /f "delims=" %%C in ('where chrome') do set "CHROME_PATH=%%C"
+    echo [OK] Chrome found in PATH: "!CHROME_PATH!"
+)
+
+echo.
+
+REM ========================================================================
+REM [STEP 6] Check and Start Ollama Server
 REM ========================================================================
 
 echo [6/7] Checking Ollama AI server...
