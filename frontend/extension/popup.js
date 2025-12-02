@@ -4,6 +4,7 @@
 
   const els = {
     wsUrl:        $('wsUrl'),
+    wsUrlResolved: $('wsUrlResolved'),
     wsStatus:     $('wsStatus'),
     email:        $('email'),
     name:         $('name'),
@@ -49,9 +50,9 @@
   };
 
   // ---------- State Management ----------
-  const LEGACY_WS_DEFAULTS = ['http://127.0.0.1:8080', 'http://localhost:8080'];
-  let wsUrlCurrent = '';
-  let wsUrlDefault = '';
+  const PROD_WS_FALLBACK = 'https://vamp.nwu.ac.za';
+  const LOCAL_WS_PORT = 8080;
+  let wsUrlCurrent = PROD_WS_FALLBACK;
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
   let isBusy = false;
@@ -642,50 +643,83 @@
     return obj;
   }
 
-  function getStoredSettings() {
+  function getBuildWsUrl() {
+    try {
+      if (globalThis?.VAMP_WS_URL) return globalThis.VAMP_WS_URL;
+      if (globalThis?.__VAMP_WS_URL__) return globalThis.__VAMP_WS_URL__;
+      if (typeof process !== 'undefined' && process?.env?.VAMP_WS_URL) return process.env.VAMP_WS_URL;
+    } catch {}
+    return '';
+  }
+
+  function deriveActiveTabWsUrl() {
     return new Promise((resolve) => {
+      const fallback = () => resolve('');
       try {
-        chrome.storage?.local?.get(['vamp_settings'], (res) => {
-          resolve(res?.vamp_settings || {});
+        if (!chrome?.tabs?.query) return fallback();
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs = []) => {
+          const activeUrl = tabs?.[0]?.url;
+          if (!activeUrl) return fallback();
+          try {
+            const parsed = new URL(activeUrl);
+            const isLocal = ['localhost', '127.0.0.1'].includes(parsed.hostname);
+            const port = parsed.port || (isLocal ? String(LOCAL_WS_PORT) : '');
+            const portPart = port ? `:${port}` : '';
+            resolve(`${parsed.protocol}//${parsed.hostname}${portPart}`);
+          } catch {
+            fallback();
+          }
         });
       } catch {
-        resolve({});
+        fallback();
       }
     });
   }
 
-  function migrateWsSetting(savedUrl = '') {
-    const trimmed = savedUrl.trim();
-    const effectiveDefault = wsUrlDefault || wsUrlCurrent;
+  function restoreSettings() {
+    return new Promise((resolve) => {
+      const applySettings = (s = {}) => {
+        if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
+        if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
+        if (els.email && s.email)  els.email.value = s.email;
+        if (els.name  && s.name)   els.name.value  = s.name;
+        if (els.org   && s.org)    els.org.value   = s.org;
+        if (els.year  && s.year)   els.year.value  = String(s.year);
+        if (els.month && s.month)  els.month.value = String(s.month);
+        if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+        resolve(s);
+      };
 
-    if (trimmed && !LEGACY_WS_DEFAULTS.includes(trimmed)) {
-      return trimmed;
-    }
-
-    return effectiveDefault || trimmed;
+      try {
+        chrome.storage?.local?.get(['vamp_settings'], (res) => {
+          applySettings(res?.vamp_settings || {});
+        });
+      } catch {
+        applySettings();
+      }
+    });
   }
 
-  async function restoreSettings() {
-    const s = await getStoredSettings();
-    const migratedWsUrl = migrateWsSetting(s.wsUrl);
-    if (els.wsUrl && migratedWsUrl) {
-      els.wsUrl.value = migratedWsUrl;
-      wsUrlCurrent = migratedWsUrl;
-    }
-    if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
-    if (els.email && s.email)  els.email.value = s.email;
-    if (els.name  && s.name)   els.name.value  = s.name;
-    if (els.org   && s.org)    els.org.value   = s.org;
-    if (els.year  && s.year)   els.year.value  = String(s.year);
-    if (els.month && s.month)  els.month.value = String(s.month);
-    if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
-    if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent || wsUrlDefault || '';
-    }
+  async function resolveInitialWsUrl(stored = {}) {
+    if (stored.wsUrl) return stored.wsUrl;
 
-    // Persist migration so subsequent loads use the derived endpoint
-    if (migratedWsUrl && migratedWsUrl !== s.wsUrl) {
-      saveSettings();
+    const buildUrl = getBuildWsUrl();
+    if (buildUrl) return buildUrl;
+
+    const tabUrl = await deriveActiveTabWsUrl();
+    if (tabUrl) return tabUrl;
+
+    return PROD_WS_FALLBACK;
+  }
+
+  function applyResolvedWsUrl(url) {
+    wsUrlCurrent = url || PROD_WS_FALLBACK;
+    if (els.wsUrl) {
+      els.wsUrl.value = wsUrlCurrent;
+    }
+    if (els.wsUrlResolved) {
+      els.wsUrlResolved.textContent = wsUrlCurrent;
+      els.wsUrlResolved.title = wsUrlCurrent;
     }
   }
 
@@ -1277,117 +1311,116 @@
   }
 
   // ---------- Enhanced Initialization ----------
-  document.addEventListener('DOMContentLoaded', async () => {
-    playOpenSound();
-    ensureYearMonth();
-    await resolveDefaultWsUrl();
-    await restoreSettings();
-    renderChatHistory();
-    renderToolFeedback();
-    updateBrainSummary('', {});
-
-    // Enhanced input handling
-    els.askText?.addEventListener('focus', () => {
-      els.askText.style.borderColor = 'var(--red)';
-      els.askText.style.boxShadow = 'var(--red-glow)';
-    });
-    
-    els.askText?.addEventListener('blur', () => {
-      els.askText.style.borderColor = '';
-      els.askText.style.boxShadow = '';
-    });
-
-    // Auto-resize textarea
-    els.askText?.addEventListener('input', function() {
-      this.style.height = 'auto';
-      this.style.height = Math.min(this.scrollHeight, 200) + 'px';
-    });
-
-    // Initialize connection
-    if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent || wsUrlDefault;
-    } else if (els.wsUrl) {
-      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent || wsUrlDefault;
-    }
-
-    connectWS(resolveActiveWsUrl());
-
-    // Event listeners
-    els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
-    els.btnState?.addEventListener('click', (e) => { e.preventDefault(); onGetState(); });
-    els.btnScan?.addEventListener('click', (e) => { e.preventDefault(); onScanActive(); });
-    els.btnScanBrain?.addEventListener('click', (e) => { e.preventDefault(); onScanBrain(); });
-    els.btnFinalise?.addEventListener('click', (e) => { e.preventDefault(); onFinaliseMonth(); });
-    els.btnExport?.addEventListener('click', (e) => { e.preventDefault(); onExportMonth(); });
-    els.btnCompile?.addEventListener('click', (e) => { e.preventDefault(); onCompileYear(); });
-    els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
-    els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
-    els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
-
-    // Evidence display listeners
-    els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
-    els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
-    els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
-
-    // Close modal when clicking outside
-    els.evidenceModal?.addEventListener('click', (e) => {
-      if (e.target === els.evidenceModal) {
-        hideEvidenceDetails();
-      }
-    });
-
-    // Table sorting
-    const tableHeaders = document.querySelectorAll('.evidence-table th[data-sort]');
-    tableHeaders.forEach(header => {
-      header.addEventListener('click', () => {
-        const column = header.getAttribute('data-sort');
-        const currentDirection = header.classList.contains('sort-asc') ? 'asc' : 'desc';
-        const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
-        
-        // Update header classes
-        tableHeaders.forEach(h => {
-          h.classList.remove('sort-asc', 'sort-desc');
-        });
-        header.classList.add(`sort-${newDirection}`);
-        
-        // Update sort state
-        currentSort = { column, direction: newDirection };
-        
-        // Re-sort and update display
-        updateEvidenceDisplay(currentEvidence);
-      });
-    });
-
-    // Settings persistence
-    [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
-      if (!el) return;
-      const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
-      el.addEventListener(evt, saveSettings);
-    });
-
-    // Manual reconnect when URL changes
-    els.wsUrl?.addEventListener('blur', () => {
-      const val = els.wsUrl.value.trim();
-      if (val && val !== wsUrlCurrent) {
-        wsUrlCurrent = val;
-        logAnswer('WebSocket URL updated, reconnecting...', 'info');
-        connectWS(wsUrlCurrent);
-        saveSettings();
-      }
-    });
-
-    // Enhanced brand icon interaction
-    els.brandIcon?.addEventListener('click', () => {
+  document.addEventListener('DOMContentLoaded', () => {
+    (async () => {
       playOpenSound();
-      logAnswer('VAMP system activated', 'success');
-    });
+      ensureYearMonth();
+      const storedSettings = await restoreSettings();
+      renderChatHistory();
+      renderToolFeedback();
+      updateBrainSummary('', {});
 
-    // Initial evidence load
-    setTimeout(() => {
-      if (SocketIOManager.isConnected()) {
-        refreshEvidenceDisplay();
-      }
-    }, 1000);
+      const resolvedUrl = await resolveInitialWsUrl(storedSettings);
+      applyResolvedWsUrl(resolvedUrl);
+      logAnswer(`Resolved WebSocket URL: ${wsUrlCurrent}`, 'info');
+
+      // Enhanced input handling
+      els.askText?.addEventListener('focus', () => {
+        els.askText.style.borderColor = 'var(--red)';
+        els.askText.style.boxShadow = 'var(--red-glow)';
+      });
+
+      els.askText?.addEventListener('blur', () => {
+        els.askText.style.borderColor = '';
+        els.askText.style.boxShadow = '';
+      });
+
+      // Auto-resize textarea
+      els.askText?.addEventListener('input', function() {
+        this.style.height = 'auto';
+        this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+      });
+
+      connectWS(wsUrlCurrent);
+
+      // Event listeners
+      els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
+      els.btnState?.addEventListener('click', (e) => { e.preventDefault(); onGetState(); });
+      els.btnScan?.addEventListener('click', (e) => { e.preventDefault(); onScanActive(); });
+      els.btnScanBrain?.addEventListener('click', (e) => { e.preventDefault(); onScanBrain(); });
+      els.btnFinalise?.addEventListener('click', (e) => { e.preventDefault(); onFinaliseMonth(); });
+      els.btnExport?.addEventListener('click', (e) => { e.preventDefault(); onExportMonth(); });
+      els.btnCompile?.addEventListener('click', (e) => { e.preventDefault(); onCompileYear(); });
+      els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
+      els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
+      els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
+
+      // Evidence display listeners
+      els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
+      els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
+      els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
+
+      // Close modal when clicking outside
+      els.evidenceModal?.addEventListener('click', (e) => {
+        if (e.target === els.evidenceModal) {
+          hideEvidenceDetails();
+        }
+      });
+
+      // Table sorting
+      const tableHeaders = document.querySelectorAll('.evidence-table th[data-sort]');
+      tableHeaders.forEach(header => {
+        header.addEventListener('click', () => {
+          const column = header.getAttribute('data-sort');
+          const currentDirection = header.classList.contains('sort-asc') ? 'asc' : 'desc';
+          const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+
+          // Update header classes
+          tableHeaders.forEach(h => {
+            h.classList.remove('sort-asc', 'sort-desc');
+          });
+          header.classList.add(`sort-${newDirection}`);
+
+          // Update sort state
+          currentSort = { column, direction: newDirection };
+
+          // Re-sort and update display
+          updateEvidenceDisplay(currentEvidence);
+        });
+      });
+
+      // Settings persistence
+      [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
+        if (!el) return;
+        const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
+        el.addEventListener(evt, saveSettings);
+      });
+
+      // Manual reconnect when URL changes
+      els.wsUrl?.addEventListener('blur', () => {
+        const val = els.wsUrl.value.trim();
+        if (val && val !== wsUrlCurrent) {
+          wsUrlCurrent = val;
+          applyResolvedWsUrl(wsUrlCurrent);
+          logAnswer('WebSocket URL updated, reconnecting...', 'info');
+          connectWS(wsUrlCurrent);
+          saveSettings();
+        }
+      });
+
+      // Enhanced brand icon interaction
+      els.brandIcon?.addEventListener('click', () => {
+        playOpenSound();
+        logAnswer('VAMP system activated', 'success');
+      });
+
+      // Initial evidence load
+      setTimeout(() => {
+        if (SocketIOManager.isConnected()) {
+          refreshEvidenceDisplay();
+        }
+      }, 1000);
+    })();
   });
 
   window.addEventListener('unload', () => {
