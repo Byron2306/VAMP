@@ -1,67 +1,40 @@
 const DEFAULT_API_ROOT = 'http://localhost:8080/api';
 
-function normalizeApiRoot(value) {
-  if (!value) throw new Error('API root is required.');
-  let url;
-  try {
-    url = new URL(value, window.location.origin);
-  } catch (err) {
-    throw new Error('API root must be a valid URL.');
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) {
-    throw new Error('API root must use http or https.');
-  }
-  const sanitizedPath = url.pathname.replace(/\/+$/, '');
-  url.pathname = sanitizedPath.endsWith('/api') ? sanitizedPath : `${sanitizedPath || ''}/api`;
-  url.hash = '';
-  return url.toString().replace(/\/$/, '');
+function sanitizeApiRoot(value) {
+  if (!value || typeof value !== 'string') return DEFAULT_API_ROOT;
+  const trimmed = value.trim();
+  if (!trimmed) return DEFAULT_API_ROOT;
+  const normalized = trimmed.replace(/\/+$/, '');
+  return normalized || DEFAULT_API_ROOT;
+}
+
+function resolveEnvApiRoot() {
+  const importMeta = typeof import.meta !== 'undefined' ? import.meta : null;
+  const globalCandidates = [
+    globalThis?.VAMP_API_ROOT,
+    globalThis?.API_BASE_URL,
+    importMeta?.env?.VAMP_API_ROOT,
+    importMeta?.env?.VITE_VAMP_API_ROOT,
+    typeof process !== 'undefined' ? process?.env?.VAMP_API_ROOT : undefined,
+    typeof process !== 'undefined' ? process?.env?.VITE_VAMP_API_ROOT : undefined,
+  ];
+  return globalCandidates.find((value) => typeof value === 'string' && value.trim())?.trim();
+}
+
+function resolveMetaApiRoot() {
+  const meta = document.querySelector('meta[name="vamp-api-root"]');
+  const content = meta?.getAttribute('content');
+  return content?.trim();
 }
 
 function resolveApiRoot() {
-  const candidates = [
-    {
-      value:
-        window.__VAMP_API_ROOT__ ||
-        window.VAMP_API_ROOT ||
-        window.__ENV__?.VAMP_API_ROOT ||
-        document.querySelector('meta[name="vamp-api-root"]')?.content,
-      source: 'build configuration',
-    },
-    { value: window.localStorage.getItem('vamp-api'), source: 'local storage' },
-    {
-      value:
-        window.location?.origin && window.location.origin !== 'null'
-          ? `${window.location.origin}/api`
-          : null,
-      source: 'current origin',
-    },
-    { value: DEFAULT_API_ROOT, source: 'default' },
-  ];
-
-  for (const candidate of candidates) {
-    if (!candidate.value) continue;
-    try {
-      const normalized = normalizeApiRoot(candidate.value);
-      if (candidate.source === 'local storage' && normalized !== candidate.value) {
-        window.localStorage.setItem('vamp-api', normalized);
-      }
-      return { apiRoot: normalized, source: candidate.source };
-    } catch (err) {
-      if (candidate.source === 'local storage') {
-        window.localStorage.removeItem('vamp-api');
-      }
-    }
-  }
-
-  return { apiRoot: DEFAULT_API_ROOT, source: 'default' };
+  const stored = window.localStorage.getItem('vamp-api');
+  const meta = resolveMetaApiRoot();
+  const env = resolveEnvApiRoot();
+  return sanitizeApiRoot(stored || meta || env || DEFAULT_API_ROOT);
 }
 
-function setApiRoot(apiRoot) {
-  API_ROOT = apiRoot;
-  document.getElementById('api-root').value = apiRoot;
-}
-
-let API_ROOT = resolveApiRoot().apiRoot;
+let API_ROOT = resolveApiRoot();
 
 async function fetchJson(path, options = {}) {
   const res = await fetch(`${API_ROOT}${path}`, {
@@ -85,6 +58,44 @@ function setChipStatus(element, status) {
     element.classList.add('warning');
   } else if (normalized.includes('fail') || normalized.includes('error') || normalized.includes('down')) {
     element.classList.add('danger');
+  }
+}
+
+function setStatusTone(element, tone = 'muted') {
+  if (!element) return;
+  element.classList.remove('success', 'warning', 'danger');
+  if (tone) {
+    element.classList.add(tone);
+  }
+}
+
+function updateApiStatus(message, tone = 'muted') {
+  const statusEl = document.getElementById('api-status');
+  if (!statusEl) return;
+  statusEl.textContent = message;
+  setStatusTone(statusEl, tone);
+}
+
+async function probeApiRoot() {
+  updateApiStatus(`Checking ${API_ROOT}/health…`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 4000);
+  try {
+    const response = await fetch(`${API_ROOT}/health`, { signal: controller.signal });
+    const payload = await response.json().catch(() => ({}));
+    const status = payload?.status || payload?.state || response.status || 'ok';
+    const message = payload?.message || 'API reachable';
+    if (!response.ok) {
+      throw new Error(`${status} ${message}`.trim());
+    }
+    updateApiStatus(`${message} (${status})`, 'success');
+    return true;
+  } catch (err) {
+    const reason = err.name === 'AbortError' ? 'timeout' : err.message;
+    updateApiStatus(`Cannot reach API. Update the base URL above or ensure the service is running. (${reason})`, 'danger');
+    return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -277,17 +288,23 @@ async function preflightHealthCheck() {
 
 function persistApiRoot() {
   const input = document.getElementById('api-root');
-  return validateAndPersistApiRoot(input.value);
+  const value = sanitizeApiRoot(input.value);
+  window.localStorage.setItem('vamp-api', value);
+  API_ROOT = value;
+  input.value = API_ROOT;
+  updateApiStatus('Saved API base URL to local storage.', 'success');
 }
 
 window.addEventListener('DOMContentLoaded', () => {
-  setApiRoot(API_ROOT);
+  const apiField = document.getElementById('api-root');
+  apiField.value = API_ROOT;
+  updateApiStatus(`Using API base: ${API_ROOT}`);
 
-  document.getElementById('save-api').addEventListener('click', async () => {
-    const normalized = persistApiRoot();
-    if (!normalized) return;
-    const health = await preflightHealthCheck();
-    if (health) refresh(health);
+  document.getElementById('save-api').addEventListener('click', () => {
+    persistApiRoot();
+    probeApiRoot().then((reachable) => {
+      if (reachable) refresh();
+    });
   });
   document.getElementById('refresh').addEventListener('click', refresh);
   document.getElementById('refresh-session').addEventListener('click', refreshSessionState);
@@ -307,7 +324,9 @@ window.addEventListener('DOMContentLoaded', () => {
       .catch((err) => alert(err.message));
   });
 
-  preflightHealthCheck().then((health) => {
-    if (health) refresh(health);
+  probeApiRoot().then((reachable) => {
+    if (reachable) {
+      refresh();
+    }
   });
 });
