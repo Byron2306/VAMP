@@ -3,6 +3,7 @@
 ## Overview
 
 The **VAMP Agent** is a stealthy, browser-based deep content analysis tool that scrapes, reads, scores, and normalizes information from platforms like:
+
 - 📧 Outlook / Office365
 - ☁️ OneDrive
 - 🧾 Google Drive
@@ -11,17 +12,11 @@ The **VAMP Agent** is a stealthy, browser-based deep content analysis tool that 
 
 It uses **Playwright** for authenticated browser automation, **NWU Brain** for scoring extracted evidence, and a **WebSocket bridge** for frontend-extension integration.
 
-> ⚠️ Platform automation notice: Use this project only where you have explicit permission
-> to automate logins, scraping, or metadata extraction. Review each platform's terms of
-> service and anti-automation policies (Outlook/Office365, OneDrive, Google Drive,
-> NextCloud, eFundi) before running connectors, and add any required trademark or usage
-> notices when demonstrating the tool.
-
----
+> ⚠️ **Platform automation notice**: Use this project only where you have explicit permission to automate logins, scraping, or metadata extraction. Review each platform's terms of service and anti-automation policies (Outlook/Office365, OneDrive, Google Drive, NextCloud, eFundi) before running connectors, and add any required trademark or usage notices when demonstrating the tool.
 
 ## 🏗 System Architecture
 
-```txt
+```
 Unified Agent Server (backend.app_server)
 ├── REST API (/api/*)
 │   ├── Auth vault + audit (backend.agent_app.auth_manager)
@@ -33,22 +28,20 @@ Unified Agent Server (backend.app_server)
     └── backend.vamp_agent ↔ NWU Brain (scoring)
 ```
 
----
-
 ## 📂 Repository Layout
 
 ```
 VAMP/
 ├── README.md
-├── backend/                   # Python backend package
-│   ├── agent_app/             # Agent-as-app runtime (vault, plugins, API)
+├── backend/              # Python backend package
+│   ├── agent_app/        # Agent-as-app runtime (vault, plugins, API)
 │   ├── data/
-│   │   ├── agent_app/         # Connector manifests + persisted config
-│   │   ├── nwu_brain/         # Scoring manifest + policy knowledge base
-│   │   ├── states/            # Browser storage state (created at runtime)
-│   │   └── store/             # User evidence store (created at runtime)
-│   ├── platform_plugins/      # Built-in connector implementations
-│   ├── nwu_brain/             # NWU scorer implementation
+│   │   ├── agent_app/    # Connector manifests + persisted config
+│   │   ├── nwu_brain/    # Scoring manifest + policy knowledge base
+│   │   ├── states/       # Browser storage state (created at runtime)
+│   │   └── store/        # User evidence store (created at runtime)
+│   ├── platform_plugins/ # Built-in connector implementations
+│   ├── nwu_brain/        # NWU scorer implementation
 │   ├── app_server.py
 │   ├── vamp_agent.py
 │   ├── vamp_master.py
@@ -56,14 +49,12 @@ VAMP/
 │   ├── vamp_store.py
 │   └── ws_bridge.py
 ├── frontend/
-│   └── extension/             # Chrome extension source (incl. icons/, sounds/)
+│   └── extension/        # Chrome extension source (incl. icons/, sounds/)
 ├── requirements.txt
 └── scripts/
     ├── setup_backend.ps1
     └── setup_backend.bat
 ```
-
----
 
 ## 🚀 Features
 
@@ -72,27 +63,17 @@ VAMP/
 - 📜 Auto-scroll & deep content extraction
 - 💾 Durable browser storage states with optional password vault entries for scripted logins
 - 🔍 Works with Google, Microsoft, Sakai platforms
-- 🧰 Integrated with NWU's custom scoring engine
-- 🧩 Injects the full NWU brain corpus (charter, routing, policies, scoring, values) into every Ollama gemma3:4b-b prompt
+- 🪡 Integrated with NWU's custom scoring engine
 - 🧾 Emits per-scan evidence counts to simplify "zero result" troubleshooting
 - 🧱 Modular plugin design: connectors can be enabled/disabled or reconfigured live from the agent dashboard
 - 🗂 Evidence vault + chain-of-custody controls surfaced via REST/CLI
 - 🔄 Self-update checks and rollback orchestration managed by the agent
 
----
-
 ## ✅ Data handling and prompt safety
 
-- Keep the NWU Brain corpus (policy text, clause packs, routing manifests) within approved
-  NWU environments. Do **not** forward the raw corpus to third-party AI endpoints or
-  logging providers without explicit approval and a data-sharing agreement.
-- When inspecting prompts or debugging AI calls, redact policy text in logs. The backend
-  already sends only canonical, scored fields to the assistant; avoid additional logging
-  of full prompts.
-- Refer to `backend/data/nwu_brain/PROVENANCE.md` to confirm ownership/permission for each
-  knowledge asset before redistribution.
-
----
+- Keep the NWU Brain corpus (policy text, clause packs, routing manifests) within approved NWU environments. Do **not** forward the raw corpus to third-party AI endpoints or logging providers without explicit approval and a data-sharing agreement.
+- When inspecting prompts or debugging AI calls, redact policy text in logs. The backend already sends only canonical, scored fields to the assistant; avoid additional logging of full prompts.
+- Refer to `backend/data/nwu_brain/PROVENANCE.md` to confirm ownership/permission for each knowledge asset before redistribution.
 
 ## 🧪 Setup Instructions
 
@@ -128,15 +109,15 @@ The server exposes a REST API on `http://localhost:8080/api/*` that powers:
 
 > `backend.ws_bridge` and the browser extension now communicate via the agent server. Existing automation entrypoints (`vamp_agent.py`) continue to function but source credentials and configuration exclusively from the agent runtime.
 
-If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script now performs a lightweight health check using `scripts/check_ollama.py` before launching the REST API and WebSocket bridge, so you'll immediately see whether the local Ollama runtime (127.0.0.1:11434) is reachable. No API keys or cloud endpoints are required—the helper exports the detected loopback URL to every backend component automatically.
+If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script performs a lightweight health check before launching the REST API and WebSocket bridge, so you'll immediately see whether the backend is ready. No API keys or cloud endpoints are required.
 
-### 3b. 🔍 Inspect the AI stack live
+### 3b. 🔍 Inspect the agent status live
 
 Once the server is running, hit `GET /api/ai/status` to confirm that:
 
 - the socket bridge sees your browser session (`runtime.connected_clients`),
 - the last WebSocket action routed through the backend is logged, and
-- the NWU Brain corpus is actually injected into every Ollama prompt (`backend.brain.system_prompt_bytes` and `assets`).
+- the NWU Brain corpus is loaded (`backend.brain.system_prompt_bytes` and `assets`).
 
 Example:
 
@@ -144,48 +125,37 @@ Example:
 curl http://127.0.0.1:8080/api/ai/status | jq
 ```
 
-The response shows the resolved Ollama URL/model, whether a reasoning directive is being sent, and includes a short preview of the compiled NWU system prompt so you can verify the correct corpus is loaded.
+The response shows health metrics and includes a short preview of the compiled NWU system prompt so you can verify the correct corpus is loaded.
 
 ### 4. 🖥 Launch the built-in dashboard (optional)
 
 Open `frontend/dashboard/index.html` in a modern browser to view health metrics, toggle connectors, inspect auth sessions, browse evidence, and trigger self-updates. The page speaks directly to the agent API—no additional build step required.
 
-### 3. 🧬 Set Environment Variables
-
-```powershell
-$env:OLLAMA_API_URL = "http://127.0.0.1:11434/api/chat"
-$env:OLLAMA_MODEL   = "gemma3:4b-b"
-```
+### 5. 🧬 Set Environment Variables (Optional)
 
 Optional safety toggle:
 
-- `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to
-  `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run
-  the dashboard read-only without triggering scans.
-
-re required.
+- `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run the dashboard read-only without triggering scans.
 
 ### Session-state first login and refresh
 
 1. Perform the very first login for each platform manually in a normal, non-headless Chrome window (Playwright will prompt you if a session is missing).
+
 2. Once authenticated, capture or refresh the storage state with either option:
+   - **Dashboard**: click **"Refresh browser session state"** in the Session State section to trigger `/api/auth/session/refresh`.
+   - **CLI**: `python scripts/refresh_state.py outlook --identity user@nwu.ac.za`
 
-   - Dashboard: click **"Refresh browser session state"** in the Session State section to trigger `/api/auth/session/refresh`.
-   - CLI: `python scripts/refresh_state.py outlook --identity user@nwu.ac.za`
-
-3. The refreshed `storage_state` JSON is recorded under `backend/data/states/<service>/` and referenced automatically for subsequent scans. No OAuth/cloud tokens are persisted.
+3. The refreshed `storage_state` JSON is recorded under `backend/data/states/<service>/<identity>/` and referenced automatically for subsequent scans. No OAuth/cloud tokens are persisted.
 
 If you want the agent to perform a fully automated login (instead of manual capture) you can still seed a username/password in the vault:
 
 ```bash
-curl -X POST http://localhost:8080/api/auth/password \
-  -H 'Content-Type: application/json' \
-  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "password": "<secret>", "metadata": {"username": "user@nwu.ac.za"}}'
+curl -X POST http://localhost:8080/api/auth/password \\
+  -H 'Content-Type: application/json' \\
+  -d '{"service": "outlook", "identity": "user@nwu.ac.za", "password": "<password>", "metadata": {"username": "user@nwu.ac.za"}}'
 ```
 
 Audit entries for session refreshes and password updates are written to `agent_app/auth.log` for troubleshooting.
-
----
 
 ## 🧠 Usage
 
@@ -197,51 +167,43 @@ python -m backend.ws_bridge
 
 The bridge now relies on the agent server for configuration and authentication. Runtime data (Chrome storage states, vault metadata, evidence, audit logs) is surfaced through the dashboard API instead of ad-hoc file inspection.
 
----
-
 ## 💡 Example Scan Flow
 
 1. Frontend triggers `"scanActive"` with:
-   ```json
-   {
-     "action": "scanActive",
-     "email": "user@nwu.ac.za",
-     "url": "https://outlook.office365.com/mail/",
-     "year": 2025,
-     "month": 11
-   }
-   ```
+```json
+{
+  "action": "scanActive",
+  "email": "user@nwu.ac.za",
+  "url": "https://outlook.office365.com/mail/",
+  "year": 2025,
+  "month": 11
+}
+```
+
 2. Backend invokes `run_scan_active(...)`
 3. Browser is launched and logs into Outlook using session state
 4. Emails are parsed, filtered, scored and returned to the frontend
 
----
-
 ## 🧪 Supported Platforms
 
-| Platform   | Status | Notes                             |
-|------------|--------|-----------------------------------|
-| Outlook    | ✅     | MFA/login handled manually first  |
-| OneDrive   | ✅     | Uses state restore for auth       |
-| GoogleDrive| ✅     | Uses persistent context           |
-| eFundi     | ✅     | No auth needed                    |
-| NextCloud  | ⚠️     | Placeholder - manual add required |
-
----
+| Platform | Status | Notes |
+|----------|--------|-------|
+| Outlook | ✅ | MFA/login handled manually first |
+| OneDrive | ✅ | Uses state restore for auth |
+| GoogleDrive | ✅ | Uses persistent context |
+| eFundi | ✅ | No auth needed |
+| NextCloud | ⚠️ | Placeholder - manual add required |
 
 ## 📁 Key Files
 
-| File / Folder                        | Description                                 |
-|--------------------------------------|---------------------------------------------|
-| `backend/vamp_agent.py`              | Core scraping + Playwright automation       |
-| `backend/ws_bridge.py`               | WebSocket bridge to frontend                |
-| `backend/ollama_client.py`           | Client to Ollama gemma3:4b-b API          |
-| `backend/nwu_brain/scoring.py`       | Loads NWU brain manifest + scoring logic    |
-| `backend/data/nwu_brain/*.json`      | Manifest, policy registry, routing rules    |
-| `backend/data/states/`               | Chrome storage states (generated at runtime)|
-| `backend/data/store/`                | Evidence store per user (generated)         |
-
----
+| File / Folder | Description |
+|---------------|-------------|
+| `backend/vamp_agent.py` | Core scraping + Playwright automation |
+| `backend/ws_bridge.py` | WebSocket bridge to frontend |
+| `backend/nwu_brain/scoring.py` | Loads NWU brain manifest + scoring logic |
+| `backend/data/nwu_brain/*.json` | Manifest, policy registry, routing rules |
+| `backend/data/states/` | Chrome storage states (generated at runtime) |
+| `backend/data/store/` | Evidence store per user (generated) |
 
 ## 🧠 NWU Brain Scoring
 
@@ -253,11 +215,10 @@ All extracted items are passed to the `NWUScorer` which assigns:
 - `band`: Banding (e.g. "Developing")
 - `policy_hits`: Keyword/policy matches
 
----
-
 ## 🛡 Authentication
 
 The system **does not use OAuth**.
+
 - Instead, it authenticates via **live Chrome profile**.
 - First-time use requires manual login in browser.
 - Persistent state is saved for reuse:
@@ -265,17 +226,13 @@ The system **does not use OAuth**.
   - `onedrive_state.json`
   - `drive_state.json`
 
----
-
-## 🧰 Debugging Tips
+## 🪡 Debugging Tips
 
 - ✅ Ensure `playwright install` is complete
 - ✅ Always launch with `python -m backend.ws_bridge`
 - 🔒 Check for blocked browser login prompts
 - 🧪 Use `--headless=False` in `BROWSER_CONFIG` to see browser
 - 🧪 Logs appear in terminal: scan status, scoring feedback
-
----
 
 ## 🔧 Developer Tips
 
@@ -284,18 +241,14 @@ The system **does not use OAuth**.
 - Use `logger.info()` to trace progress
 - Patch in `backend/data/nwu_brain/` for updated policies or scoring
 
----
-
 ## 🧾 License
 
 Internal use only – NWU Research and Policy Development.
 
----
-
 ## 🧠 Credits
 
 Built with ❤️ using:
+
 - Microsoft Playwright
 - Python 3.10
-- Ollama LLM (gemma3:4b-b cloud)
-- NWU’s brain.json and scoring logic
+- NWU's brain.json and scoring logic
