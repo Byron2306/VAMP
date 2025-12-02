@@ -230,6 +230,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return;
     }
 
+    if (msg.type === WS_MESSAGE_TYPES.ping) {
+      sendResponse?.({ type: WS_MESSAGE_TYPES.pong, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.requestStatus) {
+      sendResponse?.({ ok: true, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.configure && msg.endpoint) {
+      const normalized = normalizeEndpoint(msg.endpoint);
+      if (!normalized) {
+        sendResponse?.({ ok: false, error: 'Invalid endpoint' });
+        return;
+      }
+
+      wsEndpoint = normalized.display;
+      wsTransportUrl = normalized.transport;
+      chrome.storage?.local?.set({ vamp_ws_endpoint: { url: wsEndpoint, transport: wsTransportUrl, source: 'popup' } }).catch?.(() => {});
+      connectWebSocket(wsEndpoint, 'configure');
+      sendResponse?.({ ok: true, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.refresh) {
+      loadEndpointAndConnect('refresh');
+      sendResponse?.({ ok: true });
+      return;
+    }
+
     if (msg.source === 'offscreen-socket') {
       if (msg.event === 'status' && msg.state) {
         connectionState = msg.state;
@@ -387,6 +418,9 @@ chrome.notifications.onClicked.addListener(() => {
 self.addEventListener('unhandledrejection', (ev) => {
   console.warn('Unhandled promise rejection in service-worker:', ev.reason);
 });
+
+// Kick off background connection eagerly when the worker spins up
+loadEndpointAndConnect('hot-start');
 
 // ---------- Socket.IO connectivity (NEW) ----------
 let socket = null;

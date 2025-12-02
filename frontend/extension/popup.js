@@ -688,20 +688,42 @@
     }
   }
 
-  // ---------- Persistence ----------
-  function saveSettings() {
-    const obj = {
-      wsUrl: els.wsUrl?.value?.trim() || wsUrlCurrent,
-      scanUrl: els.scanUrl?.value?.trim() || '',
-      email: els.email?.value?.trim() || '',
-      name:  els.name?.value?.trim()  || '',
-      org:   els.org?.value?.trim()   || 'NWU',
-      year:  Number(els.year?.value || new Date().getFullYear()),
-      month: Number(els.month?.value || (new Date().getMonth()+1)),
-      ask:   els.askText?.value || ''
-    };
-    try { chrome.storage?.local?.set({ vamp_settings: obj }); } catch {}
-    return obj;
+  function readMeta(name) {
+    try {
+      return document.querySelector(`meta[name="${name}"]`)?.content;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function normalizeWsUrl(input) {
+    if (!input) return null;
+    try {
+      const parsed = new URL(input.toString().trim());
+      if (['ws:', 'wss:'].includes(parsed.protocol)) {
+        parsed.protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveDefaultWsUrl() {
+    const candidates = [
+      window.VAMP_WS_URL,
+      window.VITE_VAMP_WS_URL,
+      readMeta('vamp-ws-default'),
+      WS_DEFAULT_PROD,
+      WS_DEFAULT_FALLBACK,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = normalizeWsUrl(candidate);
+      if (normalized) return normalized;
+    }
+    return WS_DEFAULT_FALLBACK;
   }
 
   function getBuildWsUrl() {
@@ -1123,6 +1145,18 @@
         break;
     }
   }
+
+  chrome.runtime?.onMessage.addListener((msg) => {
+    if (msg?.type === 'WS_STATUS') {
+      applyWorkerStatus(msg.state);
+    }
+    if (msg?.type === 'WS_EVENT' && msg.payload) {
+      logAnswer(`Background event: ${msg.payload}`, 'info');
+    }
+    if (msg?.type === 'PONG') {
+      logAnswer('Service worker responded to ping', 'success');
+    }
+  });
 
   function extractEvidenceFromYearDoc(yearDoc) {
     const evidence = [];

@@ -37,6 +37,9 @@ function resolveApiRoot() {
 let API_ROOT = resolveApiRoot();
 
 async function fetchJson(path, options = {}) {
+  if (!API_ROOT) {
+    throw new Error('API base URL is not configured');
+  }
   const res = await fetch(`${API_ROOT}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
@@ -46,6 +49,13 @@ async function fetchJson(path, options = {}) {
     throw new Error(text || res.statusText);
   }
   return res.json();
+}
+
+function renderActiveApiRoot() {
+  const target = document.getElementById('api-active');
+  if (target) {
+    target.textContent = API_ROOT || 'not configured';
+  }
 }
 
 function setChipStatus(element, status) {
