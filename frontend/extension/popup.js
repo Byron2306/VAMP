@@ -49,9 +49,12 @@
   };
 
   // ---------- State Management ----------
-  let wsUrlCurrent = 'http://127.0.0.1:8080';
+  const WS_DEFAULT_FALLBACK = 'http://127.0.0.1:8080';
+  const WS_DEFAULT_PROD = 'https://vamp.nwu.ac.za';
+  let wsUrlCurrent = WS_DEFAULT_FALLBACK;
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
+  let swConnectionState = null;
   let isBusy = false;
   let lastPhase = 'idle';
   let lastPct = 0;
@@ -564,10 +567,50 @@
     }
   }
 
+  function readMeta(name) {
+    try {
+      return document.querySelector(`meta[name="${name}"]`)?.content;
+    } catch {
+      return undefined;
+    }
+  }
+
+  function normalizeWsUrl(input) {
+    if (!input) return null;
+    try {
+      const parsed = new URL(input.toString().trim());
+      if (['ws:', 'wss:'].includes(parsed.protocol)) {
+        parsed.protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+      }
+      if (!['http:', 'https:'].includes(parsed.protocol)) return null;
+      return parsed.toString().replace(/\/$/, '');
+    } catch {
+      return null;
+    }
+  }
+
+  function resolveDefaultWsUrl() {
+    const candidates = [
+      window.VAMP_WS_URL,
+      window.VITE_VAMP_WS_URL,
+      readMeta('vamp-ws-default'),
+      WS_DEFAULT_PROD,
+      WS_DEFAULT_FALLBACK,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = normalizeWsUrl(candidate);
+      if (normalized) return normalized;
+    }
+    return WS_DEFAULT_FALLBACK;
+  }
+
   // ---------- Persistence ----------
   function saveSettings() {
+    const normalizedWs = normalizeWsUrl(els.wsUrl?.value?.trim() || wsUrlCurrent) || resolveDefaultWsUrl();
+    wsUrlCurrent = normalizedWs;
     const obj = {
-      wsUrl: els.wsUrl?.value?.trim() || wsUrlCurrent,
+      wsUrl: normalizedWs,
       scanUrl: els.scanUrl?.value?.trim() || '',
       email: els.email?.value?.trim() || '',
       name:  els.name?.value?.trim()  || '',
@@ -577,26 +620,36 @@
       ask:   els.askText?.value || ''
     };
     try { chrome.storage?.local?.set({ vamp_settings: obj }); } catch {}
+    try { chrome.storage?.local?.set({ vamp_ws_endpoint: { url: normalizedWs, source: 'popup-save' } }); } catch {}
+    chrome.runtime?.sendMessage?.({ type: 'WS_CONFIGURE', endpoint: normalizedWs }).catch?.(() => {});
     return obj;
   }
 
-  function restoreSettings() {
-    try {
-      chrome.storage?.local?.get(['vamp_settings'], (res) => {
-        const s = res?.vamp_settings || {};
-        if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
-        if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
-        if (els.email && s.email)  els.email.value = s.email;
-        if (els.name  && s.name)   els.name.value  = s.name;
-        if (els.org   && s.org)    els.org.value   = s.org;
-        if (els.year  && s.year)   els.year.value  = String(s.year);
-        if (els.month && s.month)  els.month.value = String(s.month);
-        if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+  async function restoreSettings() {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage?.local?.get(['vamp_settings', 'vamp_ws_endpoint'], (res) => {
+          const s = res?.vamp_settings || {};
+          const storedWs = res?.vamp_ws_endpoint?.url || s.wsUrl;
+          const resolvedWs = normalizeWsUrl(storedWs) || resolveDefaultWsUrl();
+          wsUrlCurrent = resolvedWs;
+          if (els.wsUrl) els.wsUrl.value = resolvedWs;
+          if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
+          if (els.email && s.email)  els.email.value = s.email;
+          if (els.name  && s.name)   els.name.value  = s.name;
+          if (els.org   && s.org)    els.org.value   = s.org;
+          if (els.year  && s.year)   els.year.value  = String(s.year);
+          if (els.month && s.month)  els.month.value = String(s.month);
+          if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
+          chrome.storage?.local?.set({ vamp_ws_endpoint: { url: resolvedWs, source: res?.vamp_ws_endpoint ? 'persisted' : 'migrated' } }).catch?.(() => {});
+          chrome.runtime?.sendMessage?.({ type: 'WS_CONFIGURE', endpoint: resolvedWs }).catch?.(() => {});
+          resolve(resolvedWs);
+        });
+      } catch {
         if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-      });
-    } catch {
-      if (els.wsUrl && !els.wsUrl.value) els.wsUrl.value = wsUrlCurrent;
-    }
+        resolve(wsUrlCurrent);
+      }
+    });
   }
 
   // ---------- Month/Year Setup ----------
@@ -655,7 +708,7 @@
     reconnectTimer = setTimeout(() => {
       logAnswer('Attempting to reconnect...', 'info');
       connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
-      reconnectDelayMs = Math.min(reconnectDelayMs * 1.5, 10000);
+      reconnectDelayMs = Math.min(Math.round(reconnectDelayMs * 1.5), 15000);
     }, reconnectDelayMs);
   }
 
@@ -668,6 +721,9 @@
       reconnectDelayMs = 1000;
       enableControls(true);
       logAnswer('WebSocket connected successfully', 'success');
+
+      // Reflect latest endpoint selection in background worker
+      chrome.runtime?.sendMessage?.({ type: 'WS_CONFIGURE', endpoint: wsUrlCurrent }).catch?.(() => {});
 
       try {
         chrome.storage?.local?.get(['vamp_settings'], (res) => {
@@ -690,14 +746,43 @@
       if (event?.code !== 1000) {
         logAnswer(`Connection closed: ${event?.reason || 'Unknown reason'}`, 'error');
       }
-      if (!document.hidden) scheduleReconnect();
+      scheduleReconnect();
     });
+  }
+
+  function applyWorkerStatus(state) {
+    if (!state) return;
+    swConnectionState = state;
+    if (SocketIOManager.isConnected()) return; // foreground socket already active
+
+    const labelMap = {
+      connected: 'Connected (background)',
+      connecting: 'Connecting…',
+      reconnecting: 'Reconnecting…',
+      error: 'Connection Error',
+      disconnected: 'Disconnected',
+    };
+
+    const label = labelMap[state.status] || state.status || 'Unknown';
+    const statusType = state.status === 'connected' ? 'connected' : (state.status === 'error' ? 'error' : 'disconnected');
+    setStatus(label, statusType);
+    if (state.lastError && statusType === 'error') {
+      logAnswer(`Background socket error: ${state.lastError}`, 'error');
+    }
   }
 
   function connectWS(url) {
     clearTimeout(reconnectTimer);
-    wsUrlCurrent = url || wsUrlCurrent;
+    const normalized = normalizeWsUrl(url || wsUrlCurrent) || resolveDefaultWsUrl();
+    if (!normalized) {
+      setStatus('Invalid server URL', 'error');
+      logAnswer('Unable to connect: server URL is invalid', 'error');
+      return;
+    }
+
+    wsUrlCurrent = normalized;
     setStatus('Connecting...', 'scanning');
+    chrome.runtime?.sendMessage?.({ type: 'WS_CONFIGURE', endpoint: wsUrlCurrent }).catch?.(() => {});
     ensureSocketHandlers();
 
     try {
@@ -931,6 +1016,18 @@
         break;
     }
   }
+
+  chrome.runtime?.onMessage.addListener((msg) => {
+    if (msg?.type === 'WS_STATUS') {
+      applyWorkerStatus(msg.state);
+    }
+    if (msg?.type === 'WS_EVENT' && msg.payload) {
+      logAnswer(`Background event: ${msg.payload}`, 'info');
+    }
+    if (msg?.type === 'PONG') {
+      logAnswer('Service worker responded to ping', 'success');
+    }
+  });
 
   function extractEvidenceFromYearDoc(yearDoc) {
     const evidence = [];
@@ -1180,10 +1277,10 @@
   }
 
   // ---------- Enhanced Initialization ----------
-  document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('DOMContentLoaded', async () => {
     playOpenSound();
     ensureYearMonth();
-    restoreSettings();
+    wsUrlCurrent = await restoreSettings();
     renderChatHistory();
     renderToolFeedback();
     updateBrainSummary('', {});
@@ -1205,14 +1302,15 @@
       this.style.height = Math.min(this.scrollHeight, 200) + 'px';
     });
 
-    // Initialize connection
-    if (els.wsUrl && !els.wsUrl.value) {
-      els.wsUrl.value = wsUrlCurrent;
-    } else if (els.wsUrl) {
-      wsUrlCurrent = els.wsUrl.value.trim() || wsUrlCurrent;
-    }
-
-    connectWS(els.wsUrl?.value?.trim() || wsUrlCurrent);
+    // Initialize connection and synchronise with background worker
+    const normalized = normalizeWsUrl(els.wsUrl?.value || wsUrlCurrent) || resolveDefaultWsUrl();
+    wsUrlCurrent = normalized;
+    if (els.wsUrl) els.wsUrl.value = normalized;
+    try {
+      const resp = await chrome.runtime?.sendMessage?.({ type: 'WS_GET_STATUS' });
+      if (resp?.state) applyWorkerStatus(resp.state);
+    } catch {}
+    connectWS(normalized);
 
     // Event listeners
     els.btnEnrol?.addEventListener('click', (e) => { e.preventDefault(); onEnrol(); });
@@ -1269,8 +1367,13 @@
 
     // Manual reconnect when URL changes
     els.wsUrl?.addEventListener('blur', () => {
-      const val = els.wsUrl.value.trim();
-      if (val && val !== wsUrlCurrent) {
+      const val = normalizeWsUrl(els.wsUrl.value.trim());
+      if (!val) {
+        setStatus('Invalid server URL', 'error');
+        logAnswer('Please provide a valid http/https URL for the socket endpoint.', 'error');
+        return;
+      }
+      if (val !== wsUrlCurrent) {
         wsUrlCurrent = val;
         logAnswer('WebSocket URL updated, reconnecting...', 'info');
         connectWS(wsUrlCurrent);
@@ -1288,6 +1391,8 @@
     setTimeout(() => {
       if (SocketIOManager.isConnected()) {
         refreshEvidenceDisplay();
+      } else if (swConnectionState?.status === 'connected') {
+        logAnswer('Waiting for foreground socket; background connection is healthy.', 'info');
       }
     }, 1000);
   });

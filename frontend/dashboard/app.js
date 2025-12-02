@@ -1,6 +1,30 @@
-let API_ROOT = window.localStorage.getItem('vamp-api') || 'http://localhost:8080/api';
+function normalizeApiRoot(value) {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    return url.toString().replace(/\/$/, '');
+  } catch (err) {
+    console.warn('Invalid API root ignored:', value, err);
+    return null;
+  }
+}
+
+const metaApiRoot = document.querySelector('meta[name="vamp-api-root"]')?.content;
+const envApiRoot = window.VAMP_API_ROOT || window.VITE_VAMP_API_ROOT;
+const storedApiRoot = window.localStorage.getItem('vamp-api');
+const productionDefault = 'https://vamp.nwu.ac.za/api';
+
+let API_ROOT = normalizeApiRoot(storedApiRoot)
+  || normalizeApiRoot(envApiRoot)
+  || normalizeApiRoot(metaApiRoot)
+  || normalizeApiRoot(productionDefault)
+  || 'http://localhost:8080/api';
 
 async function fetchJson(path, options = {}) {
+  if (!API_ROOT) {
+    throw new Error('API base URL is not configured');
+  }
   const res = await fetch(`${API_ROOT}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
@@ -10,6 +34,13 @@ async function fetchJson(path, options = {}) {
     throw new Error(text || res.statusText);
   }
   return res.json();
+}
+
+function renderActiveApiRoot() {
+  const target = document.getElementById('api-active');
+  if (target) {
+    target.textContent = API_ROOT || 'not configured';
+  }
 }
 
 function setChipStatus(element, status) {
@@ -178,14 +209,20 @@ async function applyUpdate() {
 function persistApiRoot() {
   const input = document.getElementById('api-root');
   const value = (input.value || '').trim();
-  if (!value) return;
-  window.localStorage.setItem('vamp-api', value);
-  API_ROOT = value;
+  const normalized = normalizeApiRoot(value);
+  if (!normalized) {
+    alert('Please provide a valid http(s) API base URL.');
+    return;
+  }
+  window.localStorage.setItem('vamp-api', normalized);
+  API_ROOT = normalized;
+  renderActiveApiRoot();
 }
 
 window.addEventListener('DOMContentLoaded', () => {
   const apiField = document.getElementById('api-root');
   apiField.value = API_ROOT;
+  renderActiveApiRoot();
 
   document.getElementById('save-api').addEventListener('click', () => {
     persistApiRoot();

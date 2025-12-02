@@ -7,6 +7,156 @@ const ICON_128 = 'icons/icon128.png';
 const DAILY_ALARM = 'vampDailyNudge';
 const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
 
+// WebSocket / status message constants
+const WS_MESSAGE_TYPES = {
+  status: 'WS_STATUS',
+  event: 'WS_EVENT',
+  ping: 'PING',
+  pong: 'PONG',
+  configure: 'WS_CONFIGURE',
+  requestStatus: 'WS_GET_STATUS',
+  refresh: 'WS_REFRESH'
+};
+
+const LEGACY_WS_URL = 'http://127.0.0.1:8080';
+const PROD_DEFAULT_WS = 'https://vamp.nwu.ac.za';
+const MAX_BACKOFF_MS = 30000;
+const MIN_BACKOFF_MS = 1000;
+
+let wsClient = null;
+let wsReconnectTimer = null;
+let wsBackoff = MIN_BACKOFF_MS;
+let wsEndpoint = null;
+let wsTransportUrl = null;
+let wsState = {
+  status: 'disconnected',
+  updatedAt: Date.now(),
+  attempts: 0,
+  endpoint: null,
+  transportUrl: null,
+  lastError: null
+};
+
+// ---------- WebSocket helpers ----------
+function resolveDefaultWsUrl() {
+  const envDefault = typeof self !== 'undefined' && (self.VAMP_WS_URL || self.VITE_VAMP_WS_URL);
+  return envDefault || PROD_DEFAULT_WS || LEGACY_WS_URL;
+}
+
+function normalizeEndpoint(urlLike) {
+  if (!urlLike) return null;
+  try {
+    const raw = urlLike.toString().trim();
+    const parsed = new URL(raw);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(parsed.protocol)) {
+      return null;
+    }
+
+    const display = parsed.toString().replace(/\/$/, '');
+    const wsProtocol = parsed.protocol === 'https:' ? 'wss:' : (parsed.protocol === 'http:' ? 'ws:' : parsed.protocol);
+    const wsUrl = new URL(display);
+    wsUrl.protocol = wsProtocol;
+    return { display, transport: wsUrl.toString() };
+  } catch (err) {
+    console.warn('[VAMP][SW] Invalid WS endpoint provided', urlLike, err);
+    return null;
+  }
+}
+
+function persistWsState(patch = {}) {
+  wsState = {
+    ...wsState,
+    ...patch,
+    updatedAt: Date.now(),
+    endpoint: wsEndpoint,
+    transportUrl: wsTransportUrl
+  };
+  chrome.storage?.local?.set({ vamp_ws_state: wsState }).catch?.(() => {});
+  chrome.runtime?.sendMessage?.({ type: WS_MESSAGE_TYPES.status, state: wsState }).catch?.(() => {});
+}
+
+function closeWebSocket() {
+  if (wsClient) {
+    try { wsClient.close(); } catch (_) {}
+  }
+  wsClient = null;
+}
+
+function scheduleReconnect(reason = 'reconnect') {
+  clearTimeout(wsReconnectTimer);
+  wsBackoff = Math.min(Math.round(wsBackoff * 1.5), MAX_BACKOFF_MS);
+  wsReconnectTimer = setTimeout(() => {
+    connectWebSocket(wsEndpoint, reason);
+  }, wsBackoff);
+  persistWsState({ status: 'reconnecting', lastError: reason, attempts: wsState.attempts + 1 });
+}
+
+function connectWebSocket(rawEndpoint, reason = 'startup') {
+  clearTimeout(wsReconnectTimer);
+  const normalized = normalizeEndpoint(rawEndpoint || wsEndpoint || resolveDefaultWsUrl());
+  if (!normalized) {
+    persistWsState({ status: 'error', lastError: 'invalid-endpoint' });
+    return;
+  }
+
+  wsEndpoint = normalized.display;
+  wsTransportUrl = normalized.transport;
+  wsBackoff = MIN_BACKOFF_MS;
+  persistWsState({ status: 'connecting', lastError: null });
+
+  closeWebSocket();
+  wsState.attempts += 1;
+
+  try {
+    wsClient = new WebSocket(wsTransportUrl);
+  } catch (err) {
+    persistWsState({ status: 'error', lastError: err?.message || 'connect-failed' });
+    scheduleReconnect(err?.message || 'connect-failed');
+    return;
+  }
+
+  wsClient.onopen = () => {
+    persistWsState({ status: 'connected', lastError: null });
+    chrome.runtime?.sendMessage?.({ type: WS_MESSAGE_TYPES.status, state: wsState }).catch?.(() => {});
+  };
+
+  wsClient.onmessage = (event) => {
+    const payload = typeof event.data === 'string' ? event.data : JSON.stringify(event.data || {});
+    chrome.runtime?.sendMessage?.({ type: WS_MESSAGE_TYPES.event, payload }).catch?.(() => {});
+    if (payload === WS_MESSAGE_TYPES.ping) {
+      wsClient?.send?.(WS_MESSAGE_TYPES.pong);
+    }
+  };
+
+  wsClient.onerror = (err) => {
+    persistWsState({ status: 'error', lastError: err?.message || 'socket-error' });
+  };
+
+  wsClient.onclose = (event) => {
+    const shouldRetry = event?.code !== 1000;
+    persistWsState({ status: shouldRetry ? 'disconnected' : 'closed', lastError: event?.reason || null });
+    if (shouldRetry) {
+      scheduleReconnect(event?.reason || 'closed');
+    }
+  };
+}
+
+async function loadEndpointAndConnect(trigger = 'startup') {
+  try {
+    const stored = await chrome.storage?.local?.get?.(['vamp_settings', 'vamp_ws_endpoint']) || {};
+    const candidate = stored?.vamp_ws_endpoint?.url || stored?.vamp_settings?.wsUrl || resolveDefaultWsUrl();
+    const normalized = normalizeEndpoint(candidate) || normalizeEndpoint(LEGACY_WS_URL);
+    if (normalized) {
+      wsEndpoint = normalized.display;
+      wsTransportUrl = normalized.transport;
+      chrome.storage?.local?.set({ vamp_ws_endpoint: { url: wsEndpoint, transport: wsTransportUrl, source: trigger } }).catch?.(() => {});
+      connectWebSocket(wsEndpoint, trigger);
+    }
+  } catch (err) {
+    persistWsState({ status: 'error', lastError: err?.message || 'init-failed' });
+  }
+}
+
 // ---------- Install / Update ----------
 chrome.runtime.onInstalled.addListener(() => {
   // Daily reminder alarm (idempotent)
@@ -21,6 +171,12 @@ chrome.runtime.onInstalled.addListener(() => {
     },
     vamp_evidence: []
   }).catch?.(() => {});
+
+  loadEndpointAndConnect('installed');
+});
+
+chrome.runtime.onStartup.addListener(() => {
+  loadEndpointAndConnect('startup');
 });
 
 // ---------- Alarms ----------
@@ -75,6 +231,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     if (!msg || typeof msg !== 'object') {
       sendResponse?.({ ok: false, error: 'Bad message' });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.ping) {
+      sendResponse?.({ type: WS_MESSAGE_TYPES.pong, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.requestStatus) {
+      sendResponse?.({ ok: true, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.configure && msg.endpoint) {
+      const normalized = normalizeEndpoint(msg.endpoint);
+      if (!normalized) {
+        sendResponse?.({ ok: false, error: 'Invalid endpoint' });
+        return;
+      }
+
+      wsEndpoint = normalized.display;
+      wsTransportUrl = normalized.transport;
+      chrome.storage?.local?.set({ vamp_ws_endpoint: { url: wsEndpoint, transport: wsTransportUrl, source: 'popup' } }).catch?.(() => {});
+      connectWebSocket(wsEndpoint, 'configure');
+      sendResponse?.({ ok: true, state: wsState });
+      return;
+    }
+
+    if (msg.type === WS_MESSAGE_TYPES.refresh) {
+      loadEndpointAndConnect('refresh');
+      sendResponse?.({ ok: true });
       return;
     }
 
@@ -161,6 +348,9 @@ chrome.notifications.onClicked.addListener(() => {
 self.addEventListener('unhandledrejection', (ev) => {
   console.warn('Unhandled promise rejection in service-worker:', ev.reason);
 });
+
+// Kick off background connection eagerly when the worker spins up
+loadEndpointAndConnect('hot-start');
 
 // ---------- Optional keep-alive (disabled) ----------
 // chrome.alarms.create('vamp-keepalive', { periodInMinutes: 4 });
