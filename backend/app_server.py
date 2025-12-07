@@ -22,9 +22,13 @@ def create_app() -> tuple:
     app = Flask(__name__, static_folder=str(dashboard_dir), static_url_path='')
     
     # Configure SocketIO with proper CORS and transport settings
+    cors_origins = os.getenv("VAMP_CORS_ALLOWED_ORIGINS", "*")
+    if cors_origins and cors_origins != "*":
+        cors_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
+
     socketio = SocketIO(
         app,
-        cors_allowed_origins=os.getenv("VAMP_CORS_ALLOWED_ORIGINS", "http://localhost:8000"),
+        cors_allowed_origins=cors_origins or "*",
         async_mode='threading',  # Use threading for compatibility
         ping_timeout=60,  # Increase timeout to 60 seconds
         ping_interval=25,  # Send ping every 25 seconds
@@ -74,7 +78,12 @@ def create_app() -> tuple:
 
         sid = request.sid
         ai_runtime_probe.note_socket("connect", sid)
-        logger.info("Client connected: sid=%s", sid)
+        logger.info(
+            "Client connected: sid=%s ip=%s path=%s",
+            sid,
+            request.remote_addr,
+            request.path,
+        )
 
     @socketio.on('disconnect')
     def handle_disconnect() -> None:
@@ -86,7 +95,7 @@ def create_app() -> tuple:
     @socketio.on('message')
     def handle_message(data: Any) -> None:
         sid = request.sid
-        logger.info("Received message from %s: %s", sid, data)
+        logger.info("Received action from %s: %s", sid, data)
         dispatcher.dispatch(sid, data)
     
     return app, socketio
