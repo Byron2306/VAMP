@@ -34,6 +34,8 @@ if errorlevel 1 (
 )
 
 REM Centralised network defaults
+set "VAMP_ENABLED=%VAMP_AGENT_ENABLED%"
+if not defined VAMP_ENABLED set "VAMP_ENABLED=1"
 set "HOST=%VAMP_AGENT_HOST%"
 if not defined HOST set "HOST=127.0.0.1"
 set "PORT=%VAMP_AGENT_PORT%"
