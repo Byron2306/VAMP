@@ -396,6 +396,14 @@ class WSActionDispatcher:
     def dispatch(self, sid: str, payload: Any) -> None:
         """Route an incoming payload to the appropriate handler."""
 
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                logger.info("Invalid JSON payload from %s", sid)
+                self._socketio.emit("response", _fail("ERROR", "invalid_json"), to=sid)
+                return
+
         if not isinstance(payload, dict):
             logger.warning("Rejecting non-dict websocket payload: %r", payload)
             self._socketio.emit("response", _fail("ERROR", "invalid_payload"), to=sid)
@@ -407,6 +415,7 @@ class WSActionDispatcher:
             self._socketio.emit("response", _fail("ERROR", "missing_action"), to=sid)
             return
 
+        logger.info("Dispatching action %s for sid=%s", action, sid)
         self._remember_context(sid, payload)
 
         handler_name = f"_handle_{action.lower()}"
@@ -420,7 +429,7 @@ class WSActionDispatcher:
         try:
             handler(sid, payload)
         except Exception as exc:  # pragma: no cover - defensive programming
-            logger.exception("Handler %s raised", handler_name)
+            logger.error("Handler %s raised: %s", handler_name, exc, exc_info=True)
             self._socketio.emit("response", _fail(action, str(exc)), to=sid)
 
     # ------------------------------------------------------------------
