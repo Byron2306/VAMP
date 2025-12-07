@@ -76,9 +76,41 @@ def load_outlook_selectors() -> List[str]:
 # available for tests.
 OUTLOOK_ROW_SELECTORS: List[str] = load_outlook_selectors()
 
+# ---------------------------------------------------------------------------
+# Attachment selectors
+# ---------------------------------------------------------------------------
+# These are kept here (instead of inline) so that scraper/browser extension
+# updates stay in sync. The selectors target the attachment cards/buttons in
+# the Outlook preview pane as of late 2024.
+
+ATTACHMENT_CANDIDATES: List[str] = [
+    '[data-test-id="attachment-card"]',               # Primary card element
+    '[data-test-id="attachment-preview"]',            # Preview tiles
+    '[data-log-name="Attachment"]',                  # Generic telemetry tag
+    'div[role="group"][aria-label*="Attachments"] [role="button"]',
+]
+
+# Attachment name selectors used for friendly labeling.
+ATTACHMENT_NAME_SELECTORS: List[str] = [
+    '[data-test-id="attachment-name"]',
+    'span',
+    'div[role="text"]',
+    '[title]',
+]
+
+# Body/content selectors (used by the scraper when waiting for the message
+# body to stabilise).
+BODY_SELECTORS: List[str] = [
+    'div[role="document"]',
+    '[aria-label*="Message body"]',
+]
+
 __all__ = [
     "OUTLOOK_ROW_SELECTORS",
     "OUTLOOK_ROW_FALLBACKS",
     "OUTLOOK_SELECTOR_SETS",
     "load_outlook_selectors",
+    "ATTACHMENT_CANDIDATES",
+    "ATTACHMENT_NAME_SELECTORS",
+    "BODY_SELECTORS",
 ]

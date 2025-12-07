@@ -17,14 +17,30 @@ import logging
 import os
 import platform
 import re
+import tempfile
 import time
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 from textwrap import dedent
 
-from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
+try:
+    from playwright.async_api import async_playwright, Error as PWError, TimeoutError as PWTimeout
+except ImportError as exc:  # pragma: no cover - optional runtime dependency
+    async_playwright = None  # type: ignore[assignment]
+
+    class PWError(RuntimeError):
+        pass
+
+    class PWTimeout(PWError):
+        pass
+
+    _PLAYWRIGHT_IMPORT_ERROR = exc
+else:
+    _PLAYWRIGHT_IMPORT_ERROR = None
+
 from email.utils import parsedate_to_datetime
 
 OCR_AVAILABLE = False
@@ -49,7 +65,13 @@ except Exception as exc:  # pragma: no cover - optional dependency
 
 from . import BRAIN_DATA_DIR, STATE_DIR
 from .agent_app.app_state import agent_state
-from .outlook_selectors import OUTLOOK_ROW_SELECTORS
+from .attachments import AttachmentReader
+from .outlook_selectors import (
+    ATTACHMENT_CANDIDATES,
+    ATTACHMENT_NAME_SELECTORS,
+    BODY_SELECTORS,
+    OUTLOOK_ROW_SELECTORS,
+)
 from .vamp_store import _uid
 from .nwu_brain.scoring import NWUScorer
 
@@ -123,7 +145,17 @@ _CTX = None
 _PAGES: Dict[str, Any] = {}
 _SERVICE_CONTEXTS: "OrderedDict[str, Any]" = OrderedDict()
 _CONTEXT_LOCK = asyncio.Lock()
+_BROWSER_LOCK = asyncio.Lock()
 _MAX_CONTEXTS = 10
+
+PLATFORM_LABELS = {
+    "outlook": "Outlook",
+    "onedrive": "OneDrive",
+    "drive": "Google Drive",
+    "efundi": "eFundi",
+}
+
+ATTACHMENT_READER = AttachmentReader()
 
 # Service-specific storage state paths and URLs
 STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -198,9 +230,27 @@ async def ensure_browser() -> None:
     if _BROWSER is not None:
         return
 
-    logger.info("Initializing Playwright browser with Office365 compatibility...")
-    _PLAYWRIGHT = await async_playwright().start()
-    _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
+    if _PLAYWRIGHT_IMPORT_ERROR is not None or async_playwright is None:
+        raise RuntimeError(
+            "Playwright is not installed. Install it with 'pip install playwright' "
+            "and run 'playwright install chromium' before retrying."
+        )
+
+    async with _BROWSER_LOCK:
+        if _BROWSER is not None:
+            return
+
+        logger.info("Initializing Playwright browser with Office365 compatibility...")
+        try:
+            _PLAYWRIGHT = await async_playwright().start()
+            _BROWSER = await _PLAYWRIGHT.chromium.launch(**BROWSER_CONFIG)
+        except Exception as exc:  # pragma: no cover - environment dependent
+            _PLAYWRIGHT = None
+            _BROWSER = None
+            raise RuntimeError(
+                "Failed to start Chromium via Playwright. Ensure 'playwright install chromium' "
+                "has been executed and that the host allows sandboxed browsers to run."
+            ) from exc
 
 
 def _base_context_kwargs() -> Dict[str, Any]:
@@ -291,7 +341,16 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
             context_kwargs['storage_state'] = str(state_path)
             logger.info("Using %s storage state from %s", service, state_path)
 
-        context = await _BROWSER.new_context(**context_kwargs)
+        if _BROWSER is None:
+            raise RuntimeError("Playwright browser is not initialised. Call ensure_browser() first.")
+
+        try:
+            context = await _BROWSER.new_context(**context_kwargs)
+        except Exception as exc:
+            raise RuntimeError(
+                "Unable to create a browser context. Ensure Playwright browsers are installed (playwright install chromium) "
+                "and the launch configuration is supported on this host."
+            ) from exc
 
         if state_path and not state_path.exists():
             if BROWSER_CONFIG.get("headless", True):
@@ -301,25 +360,23 @@ async def get_authenticated_context(service: str, identity: Optional[str] = None
                     "Headless mode requires a pre-authenticated storage_state file."
                 )
 
-            logger.info(f"No storage state found for {service} ({identity or 'default'}). Prompting manual login...")
-            page = await context.new_page()
-            await page.goto(SERVICE_URLS[service])
+            logger.info(
+                "No storage state found for %s (%s). Waiting for manual sign-in to capture cookies...",
+                service,
+                identity or "default",
+            )
+            await _prompt_manual_login(context, service, state_path, identity)
 
-            login_selector = {
-                "outlook": 'input[name="loginfmt"]',
-                "onedrive": 'input[name="loginfmt"]',
-                "drive": 'input[type="email"]',
-            }.get(service)
-
-            if login_selector:
-                input(
-                    f"Complete the {service} sign-in for {identity or 'this account'} in the browser window, then press Enter here..."
+            if not state_path.exists():
+                await context.close()
+                raise RuntimeError(
+                    f"Manual login for {service} did not persist credentials to {state_path}."
                 )
-                await context.storage_state(path=str(state_path))
-            else:
-                logger.warning(f"No login selector for {service}; skipping state save.")
 
-            await page.close()
+            # Reload the context with the freshly captured storage state
+            await context.close()
+            context_kwargs['storage_state'] = str(state_path)
+            context = await _BROWSER.new_context(**context_kwargs)
 
         await apply_stealth(context)
         _SERVICE_CONTEXTS[key] = context
@@ -774,6 +831,11 @@ async def _score_and_batch(
         except Exception as exc:
             logger.warning(f"Scoring failed for item {title or '[unnamed]'}: {exc}")
             item.setdefault("_scored", False)
+            item.setdefault("score", 0.0)
+            item.setdefault("band", "Unscored")
+            item.setdefault("rationale", "Scoring not available")
+
+        _normalize_evidence(item)
 
         pending.append(item)
 
@@ -793,6 +855,92 @@ async def _score_and_batch(
 
     if on_progress:
         await on_progress(90, "Scoring complete")
+
+
+def _normalize_evidence(item: Dict[str, Any]) -> None:
+    """Align evidence items with the canonical schema."""
+
+    source = (item.get("source") or "").lower() or "unknown"
+    platform = item.get("platform") or PLATFORM_LABELS.get(source, source.title())
+
+    item["source"] = source
+    item["platform"] = platform
+    item["title"] = item.get("title") or item.get("path") or "Untitled item"
+
+    snippet = _clean_text(
+        item.get("snippet")
+        or item.get("body")
+        or item.get("preview")
+        or item.get("full_text")
+        or ""
+    )
+    if snippet:
+        item["snippet"] = snippet[:400]
+
+    timestamp = item.get("date") or item.get("timestamp") or item.get("modified") or ""
+    if timestamp:
+        item["date"] = timestamp
+
+    raw_ts = item.get("raw_timestamp") or item.get("timestamp_relative") or timestamp
+    if raw_ts:
+        item["raw_timestamp"] = raw_ts
+
+    item["timestamp_confidence"] = float(item.get("timestamp_confidence") or 0.0)
+    item["timestamp_estimated"] = bool(item.get("timestamp_estimated"))
+    item.setdefault("kpa", item.get("kpa") or [])
+    item.setdefault("score", float(item.get("score") or 0.0))
+    item.setdefault("band", item.get("band") or "Unscored")
+    item.setdefault("rationale", item.get("rationale") or "Scoring not available")
+
+    if not item.get("id"):
+        fallback_ts = item.get("date") or ""
+        item["id"] = item.get("hash") or _hash_from(
+            item.get("source", ""), item.get("path") or item.get("title") or "", fallback_ts
+        )
+
+
+def _build_attachment_items(parent: Dict[str, Any]) -> List[Dict[str, Any]]:
+    attachments = parent.get("attachments") or []
+    results: List[Dict[str, Any]] = []
+
+    for attachment in attachments:
+        att_name = attachment.get("name") or "Attachment"
+        att_path = f"{parent.get('path', 'message')}::{att_name}"
+        att_timestamp = parent.get("timestamp") or parent.get("date") or _now_iso()
+
+        snippet = _clean_text(
+            attachment.get("text") or attachment.get("read_error") or "Attachment could not be read"
+        )
+
+        att_item = {
+            "source": parent.get("source", "outlook"),
+            "platform": parent.get("platform") or PLATFORM_LABELS.get(parent.get("source", ""), "Outlook"),
+            "title": f"{parent.get('title', 'Email')} – {att_name}",
+            "path": att_path,
+            "full_text": attachment.get("text") or "",
+            "snippet": snippet,
+            "timestamp": att_timestamp,
+            "raw_timestamp": parent.get("raw_timestamp") or parent.get("timestamp_relative"),
+            "timestamp_confidence": parent.get("timestamp_confidence", 0.0),
+            "timestamp_estimated": bool(parent.get("timestamp_estimated")),
+            "parent_hash": parent.get("hash"),
+        }
+
+        att_item["hash"] = _hash_from(att_item["source"], att_path, att_timestamp)
+        if attachment.get("read_error"):
+            att_item.setdefault("notes", attachment.get("read_error"))
+
+        results.append(att_item)
+
+    return results
+
+
+def _expand_attachment_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    expanded: List[Dict[str, Any]] = []
+    for item in items:
+        expanded.append(item)
+        expanded.extend(_build_attachment_items(item))
+    return expanded
 
 def _clean_text(value: Optional[str]) -> str:
     if not value:
@@ -1002,20 +1150,13 @@ async def _scroll_element(element: Any, *, step: int = 600, max_attempts: int = 
             break
 
 
-async def _gather_outlook_attachments(page: Any) -> List[Dict[str, Any]]:
-    """Collect metadata for attachments currently visible in the Outlook preview pane."""
-
-    attachment_selectors = [
-        '[data-test-id="attachment-card"]',
-        '[data-test-id="attachment-preview"]',
-        '[data-log-name="Attachment"]',
-        'div[role="group"][aria-label*="Attachments"] [role="button"]',
-    ]
+async def _gather_outlook_attachments(page: Any, download_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Collect metadata (and optionally content) for Outlook attachments."""
 
     attachments: List[Dict[str, Any]] = []
     seen_nodes: set[str] = set()
 
-    for selector in attachment_selectors:
+    for selector in ATTACHMENT_CANDIDATES:
         try:
             nodes = await page.query_selector_all(selector)
         except Exception:
@@ -1032,13 +1173,14 @@ async def _gather_outlook_attachments(page: Any) -> List[Dict[str, Any]]:
             if handle_id:
                 seen_nodes.add(handle_id)
 
-            try:
-                name = await _extract_element_text(
-                    node,
-                    '[data-test-id="attachment-name"], span, div[role="text"], [title]'
-                )
-            except Exception:
-                name = ""
+            name = ""
+            for name_selector in ATTACHMENT_NAME_SELECTORS:
+                try:
+                    name = await _extract_element_text(node, name_selector)
+                except Exception:
+                    name = ""
+                if name:
+                    break
 
             try:
                 href = await node.get_attribute("href")
@@ -1062,11 +1204,17 @@ async def _gather_outlook_attachments(page: Any) -> List[Dict[str, Any]]:
                 "downloaded": False,
             }
 
+            download_path: Optional[Path] = None
             try:
                 async with page.expect_download(timeout=1500) as download_info:
                     await node.click(timeout=1000)
                 download = await download_info.value
                 try:
+                    download_path = None
+                    if download_dir:
+                        suggested = download.suggested_filename or name
+                        download_path = Path(download_dir) / suggested
+                        await download.save_as(str(download_path))
                     attachment_info["downloaded"] = True
                     attachment_info["suggested_name"] = download.suggested_filename
                 finally:
@@ -1091,6 +1239,16 @@ async def _gather_outlook_attachments(page: Any) -> List[Dict[str, Any]]:
                     except Exception:
                         logger.debug("Unable to activate Outlook attachment %s", name)
 
+            if download_path and download_path.exists():
+                text, meta = ATTACHMENT_READER.read(download_path)
+                if text:
+                    attachment_info["text"] = text
+                attachment_info.update(meta)
+                attachment_info["path"] = str(download_path)
+
+            if not attachment_info.get("text") and not attachment_info.get("read_error"):
+                attachment_info.setdefault("read_error", "Attachment could not be read")
+
             attachments.append(attachment_info)
 
     return attachments
@@ -1106,6 +1264,13 @@ async def scrape_outlook(
     """Outlook scraper with optional deep read and month filtering."""
     items: List[Dict[str, Any]] = []
     seen_hashes: set[str] = set()
+    download_dir: Optional[Path] = None
+
+    if deep_read:
+        try:
+            download_dir = Path(tempfile.mkdtemp(prefix="vamp_outlook_attach_"))
+        except Exception:
+            download_dir = None
 
     try:
         await page.wait_for_load_state("networkidle")
@@ -1308,14 +1473,20 @@ async def scrape_outlook(
         body_text = ""
         if opened:
             try:
+                selectors_js = json.dumps(BODY_SELECTORS)
                 await page.wait_for_function(
                     dedent(
-                        """
-                        () => {
-                            const doc = document.querySelector("div[role='document']")
-                                || document.querySelector("[aria-label*='Message body']");
-                            return doc && doc.innerText && doc.innerText.trim().length > 0;
-                        }
+                        f"""
+                        () => {{
+                            const selectors = {selectors_js};
+                            for (const sel of selectors) {{
+                                const doc = document.querySelector(sel);
+                                if (doc && doc.innerText && doc.innerText.trim().length > 0) {{
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}
                         """
                     ),
                     timeout=6000,
@@ -1323,17 +1494,20 @@ async def scrape_outlook(
             except Exception:
                 await page.wait_for_timeout(500)
 
-            body_text = await _extract_element_text(
-                page, 'div[role="document"]', timeout=5000, allow_ocr=True
-            )
-            if not body_text:
+            for selector in BODY_SELECTORS:
                 body_text = await _extract_element_text(
-                    page, '[aria-label*="Message body"]', timeout=4000, allow_ocr=True
+                    page, selector, timeout=5000, allow_ocr=True
                 )
+                if body_text:
+                    break
 
         if deep_read:
             try:
-                container = await page.query_selector('div[role="document"], [aria-label*="Message body"]')
+                container = None
+                for selector in BODY_SELECTORS:
+                    container = await page.query_selector(selector)
+                    if container:
+                        break
             except Exception:
                 container = None
             await _scroll_element(container)
@@ -1381,7 +1555,7 @@ async def scrape_outlook(
 
         if deep_read:
             try:
-                attachments = await _gather_outlook_attachments(page)
+                attachments = await _gather_outlook_attachments(page, download_dir=download_dir)
             except Exception as exc:
                 logger.debug("Attachment collection failed for %s: %s", subject, exc)
                 attachments = []
@@ -1402,6 +1576,12 @@ async def scrape_outlook(
         item["hash"] = item_hash
 
         items.append(item)
+
+    if download_dir and download_dir.exists():
+        try:
+            shutil.rmtree(download_dir, ignore_errors=True)
+        except Exception:
+            pass
 
     return items
 
@@ -1520,7 +1700,13 @@ async def run_scan_active(
     *,
     deep_read: bool = True,
 ) -> List[Dict[str, Any]]:
-    await ensure_browser()
+    try:
+        await ensure_browser()
+    except Exception as exc:
+        logger.error("Browser startup failed: %s", exc)
+        if on_progress:
+            await on_progress(0, f"Browser startup failed: {exc}")
+        return []
     
     parsed_url = urlparse(url)
     host = parsed_url.hostname.lower() if parsed_url.hostname else ""
@@ -1566,7 +1752,7 @@ async def run_scan_active(
     
     if on_progress:
         await on_progress(30, "Loading content...")
-    
+
     items = []
     if service == "outlook":
         items = await scrape_outlook(page, month_bounds, deep_read=deep_read, on_progress=on_progress)
@@ -1576,6 +1762,8 @@ async def run_scan_active(
         items = await scrape_drive(page, month_bounds)
     elif service == "efundi":
         items = await scrape_efundi(page, month_bounds)
+
+    items = _expand_attachment_items(items)
 
     await page.close()
 
@@ -1598,9 +1786,8 @@ async def run_scan_active(
             seen.add(h)
             deduped.append(it)
     
-    if on_progress:
-        await _score_and_batch(deduped, lambda batch: None, on_progress)  # Score if needed
-    
+    await _score_and_batch(deduped, lambda batch: None, on_progress)  # Score if needed
+
     return deduped
 
 # --------------------------------------------------------------------------------------
