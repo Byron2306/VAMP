@@ -6,8 +6,8 @@
   "description": "Live in-session scanning of Outlook/OneDrive/Google Drive/eFundi with Python agent orchestration, classification, and reporting.",
 
   "vampConfig": {
-    "apiBaseUrl": "http://localhost:8080/api",
-    "wsBaseUrl": "http://localhost:8080"
+    "apiBaseUrl": "http://127.0.0.1:8080/api",
+    "wsBaseUrl": "http://127.0.0.1:8080"
   },
 
   "icons": {
@@ -40,6 +40,7 @@
   ],
 
   "host_permissions": [
+    "http://127.0.0.1:8080/*",
     "https://outlook.office.com/*",
     "https://outlook.live.com/*",
     "https://outlook.office365.com/*",
@@ -88,9 +89,5 @@
   "options_ui": {
     "page": "popup.html",
     "open_in_tab": false
-  },
-
-  "vamp_defaults": {
-    "wsUrl": "http://127.0.0.1:8080"
   }
 }

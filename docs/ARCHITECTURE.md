@@ -11,10 +11,10 @@ The Chrome extension must use the Flask + Socket.IO server defined in `backend/a
 
 ## Frontend components
 - **Chrome extension** (`frontend/extension`):
-  - `manifest.json` pins defaults to `http://localhost:8080/api` and `http://localhost:8080` for REST and Socket.IO, respectively.【F:frontend/extension/manifest.json†L8-L95】
-  - `service-worker.js` owns a background Engine.IO/WebSocket connection, converting base URLs into `/socket.io/?EIO=4&transport=websocket` endpoints and broadcasting status/messages to the popup.【F:frontend/extension/service-worker.js†L1-L207】
-  - `popup.js` renders the UI and can also create a Socket.IO connection via `socket-io-wrapper.js`; it sends actions such as ENROL, GET_STATE, SCAN_ACTIVE, ASK, FINALISE_MONTH, EXPORT_MONTH, and COMPILE_YEAR over Socket.IO.【F:frontend/extension/popup.js†L930-L980】【F:frontend/extension/popup.js†L1071-L1395】
-  - `socket-io-wrapper.js` lazy-loads the Socket.IO client and exposes a `SocketIOManager` used by `popup.js`.【F:frontend/extension/socket-io-wrapper.js†L1-L118】
+  - `manifest.json` pins defaults to `http://127.0.0.1:8080/api` and `http://127.0.0.1:8080` for REST and Socket.IO, respectively.【F:frontend/extension/manifest.json†L8-L78】
+  - `service-worker.js` is responsible for alarms, notifications, evidence storage helpers, and offscreen audio. WebSocket ownership lives exclusively in the popup so there is no duplicate background connection.【F:frontend/extension/service-worker.js†L1-L112】
+  - `popup.js` renders the UI and owns the Socket.IO connection via `socket-io-wrapper.js`; it sends actions such as ENROL, GET_STATE, SCAN_ACTIVE, ASK, FINALISE_MONTH, EXPORT_MONTH, and COMPILE_YEAR over Socket.IO.【F:frontend/extension/popup.js†L930-L980】【F:frontend/extension/popup.js†L1071-L1395】
+  - `socket-io-wrapper.js` lazy-loads the Socket.IO client and exposes a `SocketIOManager` used by `popup.js` for connect/disconnect/send/on/isConnected operations.【F:frontend/extension/socket-io-wrapper.js†L1-L116】
 - **Dashboard** (`frontend/dashboard`): Static status UI (index.html + styles.css + app.js) served by `app_server.py` root. It defaults to `http://localhost:8080/api` for health and connector calls.【F:frontend/dashboard/app.js†L1-L44】【F:backend/app_server.py†L17-L48】
 
 ## Data and evidence storage
@@ -26,6 +26,6 @@ The Chrome extension must use the Flask + Socket.IO server defined in `backend/a
 - **Legacy plain WebSocket**: `ws_bridge.py` defaults to `ws://127.0.0.1:8765/` via `APP_HOST`/`APP_PORT` env vars; recommended only for legacy dashboards or debugging.【F:backend/ws_bridge.py†L37-L40】
 
 ## Component interactions
-- The extension’s popup and background service worker send Socket.IO `message` events to `app_server.py`, which routes them to `WSActionDispatcher`. Responses flow back over the same Socket.IO channel.
+  - The extension’s popup sends Socket.IO `message` events to `app_server.py`, which routes them to `WSActionDispatcher`. Responses flow back over the same Socket.IO channel.
 - The dashboard fetches REST endpoints under `/api/*` from the same server and uses the root path `/` to load its static assets served by Flask.
 - Evidence operations (ENROL/GET_STATE/SCAN_ACTIVE/etc.) ultimately read or write JSON/CSV via `VampStore` in `backend/data/store`.
