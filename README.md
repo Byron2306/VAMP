@@ -143,6 +143,16 @@ Optional flags (see [`docs/SETUP_BACKEND.md`](docs/SETUP_BACKEND.md) for more):
 - `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run the dashboard read-only.
 - `START_WS_BRIDGE` (default: `0`) — start the legacy `backend.ws_bridge` helper (listens on `APP_HOST`/`APP_PORT`, default `127.0.0.1:8765`).
 
+### 6. 🖥 Offline desktop wrapper (no WebSocket)
+
+If you need a fully local UI instead of the browser extension, launch the Tkinter wrapper and call the backend directly:
+
+```bash
+python frontend/offline_app/offline_app.py
+```
+
+Use the **Run monthly scan** button to invoke `backend.vamp_master.scan_and_score` on any folder, and **Build year summary** to run `backend.vamp_runner` across the generated `_out/audit.csv` files. For a standalone executable, build with PyInstaller: `pyinstaller --onefile --noconsole frontend/offline_app/offline_app.py`.
+
 ### Session-state first login and refresh
 
 1. Perform the very first login for each platform manually in a normal, non-headless Chrome window (Playwright will prompt you if a session is missing).
