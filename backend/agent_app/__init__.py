@@ -18,3 +18,5 @@ __all__ = [
     "AGENT_CONFIG_DIR",
     "AGENT_LOG_DIR",
 ]
+# Import local_scan_handler to patch WSActionDispatcher with SCAN_LOCAL support
+from . import local_scan_handler
