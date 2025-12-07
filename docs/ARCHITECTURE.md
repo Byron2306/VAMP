@@ -29,3 +29,13 @@ The Chrome extension must use the Flask + Socket.IO server defined in `backend/a
   - The extension’s popup sends Socket.IO `message` events to `app_server.py`, which routes them to `WSActionDispatcher`. Responses flow back over the same Socket.IO channel.
 - The dashboard fetches REST endpoints under `/api/*` from the same server and uses the root path `/` to load its static assets served by Flask.
 - Evidence operations (ENROL/GET_STATE/SCAN_ACTIVE/etc.) ultimately read or write JSON/CSV via `VampStore` in `backend/data/store`.
+
+## Outlook & OneDrive Connector Flow (Playwright)
+- **Outlook (SCAN_ACTIVE):**
+  - Uses the Playwright helpers in `backend/vamp_agent.py` to open a context backed by `STATE_DIR` storage (`get_authenticated_context`). The mailbox view is detected via selectors in `backend/outlook_selectors.py` (e.g. `OUTLOOK_SELECTORS.inbox_list`, `message_row`).
+  - Message rows are read with resilient selectors (subject/sender/date) and parsed via `parse_outlook_date` in `backend/date_utils.py` to enforce month-range filtering. Rows outside the target `MonthBounds` are skipped.
+  - Each row is opened via row activation, bodies are captured with `BODY_SELECTORS`, and attachments are enumerated using `ATTACHMENT_CANDIDATES`/`ATTACHMENT_NAME_SELECTORS`. Attachment deep-read uses `extract_text_from_attachment` in `backend/attachments.py`, with warnings captured on failure.
+- **OneDrive/WebDAV:**
+  - The OneDrive path in `scrape_onedrive` navigates to `SERVICE_URLS['onedrive']`, waits for the grid selectors defined in `backend/onedrive_selectors.py`, then iterates row/name/modified-date selectors to build evidence. Dates are parsed with the same Outlook-aware helper and filtered against month bounds.
+  - WebDAV helpers remain in `backend/webdav_connector.py` for generic storage operations; the OneDrive Playwright path is preferred for SCAN_ACTIVE evidence.
+

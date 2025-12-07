@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
+
+if TYPE_CHECKING:  # pragma: no cover - optional import for typing only
+    from playwright.async_api import Page
 
 logger = logging.getLogger("vamp.attachments")
 
@@ -66,6 +69,72 @@ class AttachmentReader:
             logger.warning("Failed to read PDF %s: %s", path.name, exc)
             return "", {"read_error": "Attachment could not be read"}
 
+
+async def extract_text_from_attachment(
+    page: "Page",
+    attachment_element: Any,
+    temp_dir: Optional[Path],
+    *,
+    reader: Optional[AttachmentReader] = None,
+) -> Dict[str, Any]:
+    """
+    Activate/download an attachment node and return extraction metadata.
+
+    The helper is deliberately tolerant: any failure is captured in
+    ``read_error`` so the caller can continue processing the parent email
+    without crashing the entire scan.
+    """
+
+    info: Dict[str, Any] = {"opened": False, "downloaded": False}
+    download_path: Optional[Path] = None
+    reader = reader or AttachmentReader()
+
+    if not attachment_element:
+        info["read_error"] = "Attachment node not available"
+        return info
+
+    try:
+        if temp_dir:
+            async with page.expect_download(timeout=2000) as download_info:
+                await attachment_element.click(timeout=1500)
+            download = await download_info.value
+            suggested = download.suggested_filename or "attachment"
+            download_path = Path(temp_dir) / suggested
+            await download.save_as(str(download_path))
+            info["downloaded"] = True
+            info["suggested_name"] = suggested
+    except Exception:
+        # Fall back to trying a preview window instead of failing hard.
+        pass
+
+    if not info.get("downloaded"):
+        try:
+            async with page.expect_popup(timeout=1500) as popup_info:
+                await attachment_element.click(timeout=1500)
+            popup = await popup_info.value
+            try:
+                await popup.wait_for_load_state("domcontentloaded")
+                info["opened"] = True
+            finally:
+                await popup.close()
+        except Exception:
+            try:
+                await attachment_element.click(timeout=1500)
+                info["opened"] = True
+            except Exception as exc:
+                info.setdefault("read_error", f"Attachment could not be opened: {exc}")
+
+    if download_path and download_path.exists():
+        text, meta = reader.read(download_path)
+        if text:
+            info["text"] = text
+        info.update(meta)
+        info["path"] = str(download_path)
+    elif not info.get("read_error") and not info.get("text"):
+        info.setdefault("read_error", "Attachment could not be read")
+
+    return info
+
     def _read_docx(self, path: Path) -> Tuple[str, Dict[str, str]]:
         if docx2txt is None:
             return "", {"read_error": "DOCX extraction not supported (install docx2txt)"}
@@ -93,4 +162,4 @@ class AttachmentReader:
             return "", {"read_error": "Attachment could not be read"}
 
 
-__all__ = ["AttachmentReader"]
+__all__ = ["AttachmentReader", "extract_text_from_attachment"]
