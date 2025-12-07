@@ -474,7 +474,7 @@ class WSActionDispatcher:
         month = self._resolve_month(sid, msg)
         with self._lock:
             path = self._store.export_month_csv(target, year, month)
-        session.ok("EXPORT_MONTH", {"path": str(path)})
+        session.ok("EXPORT_MONTH", {"path": str(path), "filename": path.name})
 
     def _handle_compile_year(self, sid: str, msg: Dict[str, Any]) -> None:
         session = _SessionEmitter(self._socketio, sid)
@@ -483,7 +483,7 @@ class WSActionDispatcher:
         year = self._resolve_year(sid, msg)
         with self._lock:
             path = self._store.export_year_csv(target, year)
-        session.ok("COMPILE_YEAR", {"path": str(path)})
+        session.ok("COMPILE_YEAR", {"path": str(path), "filename": path.name})
 
     def _handle_scan_active(self, sid: str, msg: Dict[str, Any]) -> None:
         if not VAMP_AGENT_ENABLED:
