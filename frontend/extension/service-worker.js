@@ -71,8 +71,12 @@ async function connectSocket(targetUrl) {
   });
 
   socket.on('connect', () => broadcastWsStatus('connected'));
+  socket.on('connect_error', (error) => broadcastWsStatus('error', { error: error?.message || String(error) }));
   socket.on('disconnect', (reason) => broadcastWsStatus('disconnected', { reason }));
   socket.on('error', (error) => broadcastWsStatus('error', { error: error?.message || String(error) }));
+  socket.io?.on?.('reconnect_attempt', () => broadcastWsStatus('connecting'));
+  socket.io?.on?.('reconnect_error', (error) => broadcastWsStatus('error', { error: error?.message || String(error) }));
+  socket.io?.on?.('reconnect_failed', () => broadcastWsStatus('error', { reason: 'reconnect_failed' }));
   socket.onAny((event, data) => {
     if (event === 'connect' || event === 'disconnect' || event === 'error') return;
     const payload = typeof data === 'string' ? data : JSON.stringify({ action: event, ...(typeof data === 'object' ? data : {}) });
