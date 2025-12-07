@@ -334,3 +334,66 @@ class OfflineApp(tk.Tk):
         folder = self.folder_var.get().strip()
         if not folder:
             messagebox.showerror("Missing folder",
+                                             messagebox.showerror("Missing folder", "Please choose an evidence root folder.")
+            return
+            
+        try:
+            year = int(self.year_var.get())
+        except ValueError:
+            messagebox.showerror("Invalid year", "Year must be numeric for the summary.")
+            return
+            
+        evidence_root = Path(folder).expanduser().resolve()
+        if not evidence_root.exists():
+            messagebox.showerror("Not found", f"Folder does not exist: {evidence_root}")
+            return
+            
+        rank = self.rank_var.get().strip() or "Lecturer"
+        threading.Thread(
+            target=self._run_summary,
+            args=(evidence_root, year, rank),
+            daemon=True,
+        ).start()
+        
+    def _run_scan(self, evidence_root: Path, year: int, month: int, out_dirname: str) -> None:
+        self._queue_log(f"🔍 Starting scan in {evidence_root} (year {year}, month {month})...", "info")
+        try:
+            csv_path, report_path = scan_and_score(
+                evidence_root=evidence_root,
+                year=year,
+                month=month,
+                out_dirname=out_dirname,
+            )
+            self._queue_log(f"✅ Scan complete. CSV: {csv_path}", "success")
+            self._queue_log(f"📄 Report: {report_path}", "success")
+            self.after(0, lambda: messagebox.showinfo("Scan complete", f"Scan finished.\nCSV: {csv_path}\nReport: {report_path}"))
+        except Exception as exc:
+            self._queue_log(f"❌ Scan failed: {exc}", "error")
+            self.after(0, lambda: messagebox.showerror("Scan failed", str(exc)))
+            
+    def _run_summary(self, evidence_root: Path, year: int, rank: str) -> None:
+        self._queue_log(f"📊 Building year summary for {evidence_root} (rank {rank})...", "info")
+        try:
+            summary_csv, flat_csv, report_md = run_year_end(root=evidence_root, year=year, rank=rank)
+            self._queue_log(f"✅ Summary CSV: {summary_csv}", "success")
+            self._queue_log(f"📋 Evidence flat CSV: {flat_csv}", "success")
+            self._queue_log(f"📄 Final report: {report_md}", "success")
+            self.after(
+                0,
+                lambda: messagebox.showinfo(
+                    "Summary complete",
+                    f"Year-end summary built.\nSummary CSV: {summary_csv}\nFlat CSV: {flat_csv}\nReport: {report_md}",
+                ),
+            )
+        except Exception as exc:
+            self._queue_log(f"❌ Summary failed: {exc}", "error")
+            self.after(0, lambda: messagebox.showerror("Summary failed", str(exc)))
+
+
+def main() -> None:
+    app = OfflineApp()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()
