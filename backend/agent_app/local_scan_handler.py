@@ -50,14 +50,15 @@ async def _run_scan_local(self, sid: str, msg: dict) -> None:
     try:
         folder_path = msg.get("folder_path")
         if not folder_path:
-        files = msg.get("files") or []
-        if files:
-            first = files[0]
-            if isinstance(first, str) and '/' in first:                folder_path = first.split('/')[0]
+            files = msg.get("files") or []
+            if files:
+                first = files[0]
+                if isinstance(first, str) and "/" in first:
+                    folder_path = first.split("/")[0]
+                else:
+                    folder_path = str(first)
             else:
-                folder_path = str(first)
-        else:
-            raise ValueError("folder_path or files not provided for SCAN_LOCAL")
+                raise ValueError("folder_path or files not provided for SCAN_LOCAL")
 
         kpa_filter = msg.get("kpa")
         year = msg.get("year")
