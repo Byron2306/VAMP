@@ -25,6 +25,13 @@
     btnAskFb:     $('btnAskFeedback'),
     btnClearChat: $('btnClearChat'),
 
+    // Newly added local scan controls
+    btnChooseFolder: $('btnChooseFolder'),
+    btnScanLocal: $('btnScanLocal'),
+    kpaSelectLocal: $('kpaSelectLocal'),
+    selectedFolderName: $('selectedFolderName'),
+    localFolderInput: $('localFolderInput'),
+
     chatHistory:  $('chatHistory'),
 
     // Evidence display elements
@@ -70,6 +77,9 @@
   let askConversation = [];
   const toolEvents = [];
   const TOOL_EVENT_LIMIT = 30;
+
+  // Local scan state
+  let localFiles = [];
 
   // ---------- Configuration ----------
   async function loadExtensionConfig() {
@@ -174,7 +184,7 @@
     const timestamp = new Date().toLocaleTimeString();
     const prefix = type === 'error' ? '❌' : type === 'success' ? '✅' : 'ℹ️';
     
-    line.innerHTML = `<span style=\"color: var(--muted); font-size: 11px;\">[${timestamp}]</span> ${prefix} ${text}`;
+    line.innerHTML = `<span style="color: var(--muted); font-size: 11px;">[${timestamp}]</span> ${prefix} ${text}`;
     
     // Auto-scroll to bottom
     els.answerBox.prepend(line);
@@ -187,7 +197,9 @@
       els.btnFinalise, els.btnExport, els.btnCompile,
       els.btnAsk, els.btnAskFb, els.btnClearChat,
       els.btnClearEvidence,
-      els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText
+      els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText,
+      // local scan controls
+      els.btnChooseFolder, els.btnScanLocal, els.kpaSelectLocal
     ];
     
     controls.forEach(el => { 
@@ -415,7 +427,7 @@
             <div class="no-evidence-content">
               <div class="no-evidence-icon">📧</div>
               <div class="no-evidence-text">Scan Outlook Office365 to see evidence</div>
-              <div class="no-evidence-hint">Click "Scan Active" while on your Outlook mailbox</div>
+              <div class="no-evidence-hint">Click \"Scan Active\" while on your Outlook mailbox</div>
             </div>
           </td>
         </tr>
@@ -866,7 +878,7 @@
       return;
     }
   });
-
+ 
   // ---------- Enhanced Message Handling ----------
   function handleMessage(raw) {
     let msg = null;
@@ -875,15 +887,15 @@
     } else if (raw && typeof raw === 'object') {
       msg = raw.data && typeof raw.data === 'string' ? (() => { try { return JSON.parse(raw.data); } catch { return raw; } })() : raw;
     }
-
+    
     if (!msg || typeof msg !== 'object') {
       logAnswer('Invalid message received', 'error');
       return;
     }
-
+    
     const action = msg.action || '';
     const data = (msg.data && typeof msg.data === 'object') ? msg.data : {};
-
+    
     if (msg.ok === false) {
       const errText = msg.error || msg.message || 'Unknown error';
       setScanNote(`Error: ${errText}`);
@@ -895,7 +907,7 @@
       clearTimeout(scanTimeout);
       return;
     }
-
+    
     switch (action) {
       case 'SCAN_ACTIVE/STARTED': {
         isBusy = true;
@@ -906,7 +918,7 @@
         setScanNote('Authenticating...');
         setStatus('Scanning...', 'scanning');
         startHeartbeat();
-
+        
         clearTimeout(scanTimeout);
         scanTimeout = setTimeout(() => {
           if (isBusy) {
@@ -914,11 +926,11 @@
             setScanNote('Scan timeout - check backend');
           }
         }, 300000);
-
+        
         logAnswer('Office365 scan started successfully', 'success');
         break;
       }
-
+      
       case 'SCAN_ACTIVE/PROGRESS': {
         const pctRaw = typeof data.pct === 'number' ? data.pct : (Number(data.progress || 0) * 100);
         const pct = Math.max(5, Math.min(98, Number.isFinite(pctRaw) ? pctRaw : 0));
@@ -937,7 +949,7 @@
         setScanNote(note);
         break;
       }
-
+      
       case 'SCAN_ACTIVE/COMPLETE': {
         isBusy = false;
         lastPhase = 'store';
@@ -947,14 +959,14 @@
         const total = data.total_evidence || data.total || msg.total_evidence || 0;
         const brainSummary = data.brain_summary || msg.brain_summary || data.summary || msg.summary || '';
         const summaryText = brainSummary || `Scan complete. ${added} new items recorded.`;
-
+        
         setScanNote(`Complete - ${added} new items, ${total} total`);
         logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
         updateBrainSummary(summaryText, { added, total });
         if (summaryText) {
           logAnswer(`🧠 ${summaryText}`, 'info');
         }
-
+        
         const toolList = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         recordToolFeedback(toolList, 'Brain Scan');
         enableControls(true);
@@ -965,7 +977,58 @@
         onGetState();
         break;
       }
-
+      
+      // Handling local scan events
+      case 'SCAN_LOCAL/STARTED': {
+        isBusy = true;
+        enableControls(false);
+        lastPhase = 'auth';
+        lastPct = 5;
+        setProgressPct(5, true);
+        setScanNote('Scanning local files...');
+        setStatus('Scanning...', 'scanning');
+        startHeartbeat();
+        clearTimeout(scanTimeout);
+        scanTimeout = setTimeout(() => {
+          if (isBusy) {
+            logAnswer('⚠️ Local scan timeout - process may be stuck', 'warning');
+            setScanNote('Local scan timeout - check backend');
+          }
+        }, 300000);
+        logAnswer('Local scan started successfully', 'success');
+        break;
+      }
+      case 'SCAN_LOCAL/PROGRESS': {
+        const pctRaw = typeof data.pct === 'number' ? data.pct : (Number(data.progress || 0) * 100);
+        const pct = Math.max(5, Math.min(98, Number.isFinite(pctRaw) ? pctRaw : 0));
+        const phase = (data.phase || '').toString() || 'progress';
+        const note = data.note || data.status || 'Processing local files...';
+        lastPct = pct;
+        lastPhase = phase;
+        setProgressPct(pct);
+        setScanNote(note);
+        break;
+      }
+      case 'SCAN_LOCAL/COMPLETE': {
+        isBusy = false;
+        lastPhase = 'store';
+        lastPct = 100;
+        setProgressPct(100);
+        const added = data.added || msg.added || 0;
+        const total = data.total_evidence || data.total || msg.total_evidence || 0;
+        const summaryText = data.summary || msg.summary || `Local scan complete. ${added} new items recorded.`;
+        setScanNote(`Complete - ${added} new items, ${total} total`);
+        logAnswer(`✅ Local scan complete! ${added} new items, ${total} total evidence`, 'success');
+        recordToolFeedback(Array.isArray(data.tools) ? data.tools : [], 'Local Scan');
+        enableControls(true);
+        setConnectionStatus('Connected', 'connected');
+        stopHeartbeat();
+        clearTimeout(scanTimeout);
+        playOpenSound();
+        onGetState();
+        break;
+      }
+      
       case 'GET_STATE': {
         const yearDoc = data.year_doc || msg.year_doc;
         if (yearDoc && yearDoc.months) {
@@ -975,20 +1038,20 @@
         }
         break;
       }
-
+      
       case 'ASK': {
         const answer = (data.answer || msg.answer || '').toString();
         const modeRaw = data.mode || msg.mode || 'ask';
         const mode = typeof modeRaw === 'string' ? modeRaw : 'ask';
         const tools = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         const context = mode === 'brain_scan' ? 'brain' : (mode === 'assessor_strict' ? 'assessor' : 'ask');
-
+        
         if (tools.length) {
           recordToolFeedback(tools, context === 'brain' ? 'Brain Scan' : 'Ask');
         } else {
           recordToolFeedback([], context === 'brain' ? 'Brain Scan' : 'Ask');
         }
-
+        
         if (answer) {
           addChatMessage('assistant', answer, context);
           if (context === 'ask') {
@@ -998,14 +1061,14 @@
             logAnswer(`🧠 ${answer}`, 'info');
           }
         }
-
+        
         if (mode !== 'brain_scan' || !isBusy) {
           enableControls(true);
           setConnectionStatus('Connected', 'connected');
         }
         break;
       }
-
+      
       case 'ASK_FEEDBACK': {
         const answer = (data.answer || msg.answer || '').toString();
         if (answer) {
@@ -1016,7 +1079,7 @@
         setConnectionStatus('Connected', 'connected');
         break;
       }
-
+      
       case 'FINALISE_MONTH':
         logAnswer('🔒 Month finalized and locked', 'success');
         break;
@@ -1029,7 +1092,7 @@
       case 'ENROL':
         logAnswer('👤 Profile enrolled successfully', 'success');
         break;
-
+      
       default:
         if (action) {
           const detail = data.message || data.status || msg.message || '';
@@ -1039,7 +1102,7 @@
         break;
     }
   }
-
+ 
   function extractEvidenceFromYearDoc(yearDoc) {
     const evidence = [];
     if (!yearDoc.months) return evidence;
@@ -1052,17 +1115,17 @@
     
     return evidence;
   }
-
+ 
   function refreshEvidenceDisplay() {
     logAnswer('Refreshing evidence display...', 'info');
     onGetState(); // This will trigger GET_STATE and update the display
   }
-
+ 
   // ---------- Enhanced Action Handlers ----------
   function currentSettings() {
     return saveSettings();
   }
-
+ 
   async function withActiveTabUrl() {
     return new Promise((resolve) => {
       try {
@@ -1075,14 +1138,14 @@
       }
     });
   }
-
+ 
   async function resolveScanUrl() {
     const manual = els.scanUrl?.value?.trim();
     if (manual) {
       logAnswer('Using manual scan URL from popup.', 'info');
       return manual;
     }
-
+    
     const active = await withActiveTabUrl();
     if (active) {
       logAnswer('Using URL from the active browser tab.', 'info');
@@ -1092,30 +1155,30 @@
     }
     return active;
   }
-
+ 
   function getYearMonth() {
     const y = Number(els.year?.value || new Date().getFullYear());
     const m = Number(els.month?.value || (new Date().getMonth() + 1));
     return { year: y, month: m };
   }
-
+ 
   function isValidEmail(email = '') {
     return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
   }
-
+ 
   function validateScanContext(email, scanUrl) {
     if (!isValidEmail(email)) {
       logAnswer('Please provide a valid email address before scanning', 'error');
       els.email?.focus();
       return false;
     }
-
+    
     if (!scanUrl) {
       logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
       setScanNote('Waiting for scan URL');
       return false;
     }
-
+    
     const host = (() => {
       try { return new URL(scanUrl).hostname; } catch { return ''; }
     })();
@@ -1123,16 +1186,16 @@
     if (!trusted) {
       logAnswer('Warning: active tab is not an Outlook/OneDrive domain. Ensure the scan URL is correct.', 'warning');
     }
-
+    
     return true;
   }
-
+ 
   function coerceMessages(text) {
     const t = (text || '').trim();
     if (!t) return [];
     return [{ role: 'user', content: t }];
   }
-
+ 
   function onEnrol() {
     const s = currentSettings();
     if (!isValidEmail(s.email)) {
@@ -1149,20 +1212,20 @@
     });
     logAnswer('Enrolling profile...', 'info');
   }
-
+ 
   function onGetState() {
     const { year } = getYearMonth();
     sendWS({ action: 'GET_STATE', year });
     logAnswer('Fetching current state and evidence...', 'info');
   }
-
+ 
   async function onScanActive() {
     const s = currentSettings();
     const { year, month } = getYearMonth();
     const scanUrl = await resolveScanUrl();
-
+    
     if (!validateScanContext(s.email, scanUrl)) return;
-
+    
     isBusy = true;
     enableControls(false);
     lastPhase = 'auth';
@@ -1171,7 +1234,7 @@
     setScanNote('Starting Office365 scan...');
     setStatus('Scanning...', 'scanning');
     startHeartbeat();
-
+    
     sendWS({
       action: 'SCAN_ACTIVE',
       url: scanUrl,
@@ -1183,14 +1246,14 @@
       month
     });
   }
-
+ 
   async function onScanBrain() {
     const s = currentSettings();
     const { year, month } = getYearMonth();
     const scanUrl = await resolveScanUrl();
-
+    
     if (!validateScanContext(s.email, scanUrl)) return;
-
+    
     isBusy = true;
     enableControls(false);
     lastPhase = 'auth';
@@ -1199,9 +1262,9 @@
     setScanNote('Requesting NWU Brain orchestrator...');
     setStatus('Scanning...', 'scanning');
     startHeartbeat();
-
+    
     addChatMessage('user', 'Scan via Brain orchestrator initiated.', 'brain');
-
+    
     sendWS({
       action: 'ASK',
       mode: 'brain_scan',
@@ -1219,28 +1282,28 @@
         }
       ]
     });
-
+    
     logAnswer('Delegating scan to NWU Brain orchestrator...', 'info');
   }
-
+ 
   function onFinaliseMonth() {
     const { year, month } = getYearMonth();
     sendWS({ action: 'FINALISE_MONTH', year, month });
     logAnswer('Finalizing month...', 'info');
   }
-
+ 
   function onExportMonth() {
     const { year, month } = getYearMonth();
     sendWS({ action: 'EXPORT_MONTH', year, month });
     logAnswer('Exporting month CSV...', 'info');
   }
-
+ 
   function onCompileYear() {
     const { year } = getYearMonth();
     sendWS({ action: 'COMPILE_YEAR', year });
     logAnswer('Compiling year report...', 'info');
   }
-
+ 
   function onAsk() {
     const { year, month } = getYearMonth();
     const q = (els.askText?.value || '').trim();
@@ -1249,7 +1312,7 @@
       els.askText?.focus();
       return;
     }
-
+    
     enableControls(false);
     setStatus('Processing...', 'scanning');
     addChatMessage('user', q, 'ask');
@@ -1263,12 +1326,12 @@
     });
     logAnswer('Asking VAMP...', 'info');
   }
-
+ 
   function onClearChat() {
     clearAskConversation();
     logAnswer('Chat history cleared.', 'info');
   }
-
+ 
   function onAskFeedback() {
     const { year, month } = getYearMonth();
     const q = (els.askText?.value || '').trim();
@@ -1277,7 +1340,7 @@
       els.askText?.focus();
       return;
     }
-
+    
     enableControls(false);
     setStatus('Processing...', 'scanning');
     addChatMessage('user', q, 'assessor');
@@ -1290,11 +1353,76 @@
     logAnswer('Requesting strict assessment...', 'info');
   }
 
+  // Local folder selection handler
+  function onChooseFolder() {
+    if (!els.localFolderInput) return;
+    els.localFolderInput.click();
+  }
+
+  // Directory input change handler
+  function onFolderSelected(event) {
+    const files = event.target.files;
+    localFiles = [];
+    let folderLabel = '';
+    if (files && files.length) {
+      for (const file of files) {
+        if (file.webkitRelativePath) {
+          localFiles.push(file.webkitRelativePath);
+          const topFolder = file.webkitRelativePath.split('/')[0];
+          if (!folderLabel) folderLabel = topFolder;
+        } else {
+          localFiles.push(file.name);
+          folderLabel = file.name;
+        }
+      }
+      els.selectedFolderName.textContent = folderLabel ? `Folder: ${folderLabel}` : `${files.length} files selected`;
+      logAnswer(`Selected ${files.length} files for local scan`, 'info');
+    } else {
+      els.selectedFolderName.textContent = 'No folder selected';
+      logAnswer('No folder selected for local scan', 'warning');
+    }
+  }
+
+  // Local scan trigger handler
+  async function onScanLocal() {
+    const s = currentSettings();
+    const { year, month } = getYearMonth();
+    const kpa = els.kpaSelectLocal?.value || '';
+    if (!localFiles || localFiles.length === 0) {
+      logAnswer('Please choose a folder to scan', 'error');
+      return;
+    }
+    if (!isValidEmail(s.email)) {
+      logAnswer('Please provide a valid email address before scanning', 'error');
+      els.email?.focus();
+      return;
+    }
+    // start busy
+    isBusy = true;
+    enableControls(false);
+    lastPhase = 'auth';
+    lastPct = 5;
+    setProgressPct(5, true);
+    setScanNote('Starting local scan...');
+    setStatus('Scanning...', 'scanning');
+    startHeartbeat();
+    sendWS({
+      action: 'SCAN_LOCAL',
+      files: localFiles,
+      kpa: kpa,
+      email: s.email,
+      name: s.name,
+      org: s.org || 'NWU',
+      year,
+      month
+    });
+  }
+
   // Evidence display handlers
   function onClearEvidence() {
     clearEvidenceDisplay();
   }
-
+ 
   // ---------- Enhanced Initialization ----------
   document.addEventListener('DOMContentLoaded', () => {
     (async () => {
@@ -1316,18 +1444,18 @@
         els.askText.style.borderColor = 'var(--red)';
         els.askText.style.boxShadow = 'var(--red-glow)';
       });
-
+      
       els.askText?.addEventListener('blur', () => {
         els.askText.style.borderColor = '';
         els.askText.style.boxShadow = '';
       });
-
+      
       // Auto-resize textarea
       els.askText?.addEventListener('input', function() {
         this.style.height = 'auto';
         this.style.height = Math.min(this.scrollHeight, 200) + 'px';
       });
-
+      
       connectWS(wsUrlCurrent);
 
       // Event listeners
@@ -1341,11 +1469,16 @@
       els.btnAsk?.addEventListener('click', (e) => { e.preventDefault(); onAsk(); });
       els.btnAskFb?.addEventListener('click', (e) => { e.preventDefault(); onAskFeedback(); });
       els.btnClearChat?.addEventListener('click', (e) => { e.preventDefault(); onClearChat(); });
-
+      
       // Evidence display listeners
       els.btnClearEvidence?.addEventListener('click', (e) => { e.preventDefault(); onClearEvidence(); });
       els.btnCloseModal?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
       els.btnCloseDetails?.addEventListener('click', (e) => { e.preventDefault(); hideEvidenceDetails(); });
+      
+      // Local scan listeners
+      els.btnChooseFolder?.addEventListener('click', (e) => { e.preventDefault(); onChooseFolder(); });
+      els.localFolderInput?.addEventListener('change', onFolderSelected);
+      els.btnScanLocal?.addEventListener('click', (e) => { e.preventDefault(); onScanLocal(); });
 
       // Close modal when clicking outside
       els.evidenceModal?.addEventListener('click', (e) => {
@@ -1353,7 +1486,7 @@
           hideEvidenceDetails();
         }
       });
-
+      
       // Table sorting
       const tableHeaders = document.querySelectorAll('.evidence-table th[data-sort]');
       tableHeaders.forEach(header => {
@@ -1361,28 +1494,28 @@
           const column = header.getAttribute('data-sort');
           const currentDirection = header.classList.contains('sort-asc') ? 'asc' : 'desc';
           const newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
-
+          
           // Update header classes
           tableHeaders.forEach(h => {
             h.classList.remove('sort-asc', 'sort-desc');
           });
           header.classList.add(`sort-${newDirection}`);
-
+          
           // Update sort state
           currentSort = { column, direction: newDirection };
-
+          
           // Re-sort and update display
           updateEvidenceDisplay(currentEvidence);
         });
       });
-
+      
       // Settings persistence
       [els.wsUrl, els.scanUrl, els.email, els.name, els.org, els.year, els.month, els.askText].forEach(el => {
         if (!el) return;
         const evt = (el.tagName === 'SELECT' || el.type === 'checkbox' || el.type === 'number') ? 'change' : 'input';
         el.addEventListener(evt, saveSettings);
       });
-
+      
       // Manual reconnect when URL changes
       els.wsUrl?.addEventListener('blur', () => {
         const val = els.wsUrl.value.trim();
@@ -1394,13 +1527,13 @@
           saveSettings();
         }
       });
-
+      
       // Enhanced brand icon interaction
       els.brandIcon?.addEventListener('click', () => {
         playOpenSound();
         logAnswer('VAMP system activated', 'success');
       });
-
+      
       // Initial evidence load
       setTimeout(() => {
         if (wsConnected) {
@@ -1409,12 +1542,10 @@
       }, 1000);
     })();
   });
-
+ 
   window.addEventListener('unload', () => {
     stopHeartbeat();
     clearTimeout(scanTimeout);
     sendToServiceWorker({ type: 'VAMP_WS_DISCONNECT' });
   });
 })();
-
-
