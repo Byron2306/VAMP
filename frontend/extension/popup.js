@@ -62,7 +62,6 @@
   let heartbeatTimer = null;
   let scanTimeout = null;
   let socketHandlersRegistered = false;
-  let wsStatusCache = {};
   
   // Evidence state
   let currentEvidence = [];
@@ -72,8 +71,6 @@
   let askConversation = [];
   const toolEvents = [];
   const TOOL_EVENT_LIMIT = 30;
-
-  const wsOwner = chrome?.runtime?.getManifest?.()?.vampConfig?.wsOwner || 'popup';
 
   // ---------- Configuration ----------
   async function loadExtensionConfig() {
@@ -126,67 +123,6 @@
       els.wsStatus.setAttribute('data-status', type);
     }
   }
-
-  function handleWsStatusMessage(message = {}) {
-    const status = message.status || 'disconnected';
-    const detail = message.detail || {};
-    wsStatusCache = { status, detail, url: message.url };
-
-    if (detail.heartbeat) {
-      return; // avoid chatty logs for keep-alives
-    }
-
-    switch (status) {
-      case 'connecting':
-        setStatus('Connecting...', 'scanning');
-        enableControls(false);
-        break;
-      case 'reconnecting':
-        setStatus('Reconnecting...', 'scanning');
-        enableControls(false);
-        logAnswer('Attempting to reconnect...', 'info');
-        break;
-      case 'connected':
-        setStatus('Connected', 'connected');
-        enableControls(true);
-        logAnswer('WebSocket connected (background)', 'success');
-        refreshEvidenceDisplay();
-        break;
-      case 'error':
-        setStatus('Connection Error', 'error');
-        enableControls(false);
-        if (detail.message) {
-          logAnswer(`WebSocket error: ${detail.message}`, 'error');
-        }
-        break;
-      default:
-        setStatus('Disconnected', 'disconnected');
-        enableControls(false);
-        if (detail?.reason && !detail.manual) {
-          logAnswer(`Connection lost: ${detail.reason}`, 'error');
-        }
-        break;
-    }
-  }
-
-  function requestWsStatus() {
-    try {
-      chrome.runtime?.sendMessage({ type: 'WS_GET_STATUS' }, (res) => {
-        if (chrome.runtime?.lastError) return;
-        if (res?.status) handleWsStatusMessage(res.status);
-      });
-    } catch {}
-  }
-
-  chrome.runtime?.onMessage?.addListener((msg) => {
-    if (!msg || typeof msg !== 'object') return;
-    if (msg.type === 'WS_STATUS') {
-      handleWsStatusMessage(msg);
-    }
-    if (msg.type === 'WS_MESSAGE') {
-      handleMessage(msg.data);
-    }
-  });
 
   function formatEndpoint(url) {
     if (!url) return '';
@@ -898,10 +834,6 @@
   }
 
   function connectWS(url) {
-    if (wsOwner === 'service_worker') {
-      requestWsStatus();
-      return;
-    }
     clearTimeout(reconnectTimer);
     wsUrlCurrent = url || wsUrlCurrent || wsUrlDefault;
     setConnectionStatus('Connecting...', 'scanning');
@@ -922,15 +854,6 @@
 
   function sendWS(payload) {
     if (!payload || typeof payload !== 'object') return;
-
-    if (wsOwner === 'service_worker') {
-      try {
-        chrome.runtime?.sendMessage({ type: 'VAMP_WS_SEND', payload });
-      } catch (err) {
-        logAnswer(`Failed to send message to background: ${err?.message || err}`, 'error');
-      }
-      return;
-    }
 
     if (!SocketIOManager.isConnected()) {
       logAnswer('Not connected - reconnecting...', 'warning');
