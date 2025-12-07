@@ -52,6 +52,7 @@
   // ---------- State Management ----------
   const PROD_WS_FALLBACK = 'https://vamp.nwu.ac.za';
   const LOCAL_WS_PORT = 8080;
+  let wsUrlDefault = '';
   let wsUrlCurrent = PROD_WS_FALLBACK;
   let reconnectTimer = null;
   let reconnectDelayMs = 1000;
@@ -61,6 +62,7 @@
   let heartbeatTimer = null;
   let scanTimeout = null;
   let socketHandlersRegistered = false;
+  let wsStatusCache = {};
   
   // Evidence state
   let currentEvidence = [];
@@ -70,6 +72,8 @@
   let askConversation = [];
   const toolEvents = [];
   const TOOL_EVENT_LIMIT = 30;
+
+  const wsOwner = chrome?.runtime?.getManifest?.()?.vampConfig?.wsOwner || 'popup';
 
   // ---------- Configuration ----------
   async function loadExtensionConfig() {
@@ -688,44 +692,6 @@
     }
   }
 
-  function readMeta(name) {
-    try {
-      return document.querySelector(`meta[name="${name}"]`)?.content;
-    } catch {
-      return undefined;
-    }
-  }
-
-  function normalizeWsUrl(input) {
-    if (!input) return null;
-    try {
-      const parsed = new URL(input.toString().trim());
-      if (['ws:', 'wss:'].includes(parsed.protocol)) {
-        parsed.protocol = parsed.protocol === 'wss:' ? 'https:' : 'http:';
-      }
-      if (!['http:', 'https:'].includes(parsed.protocol)) return null;
-      return parsed.toString().replace(/\/$/, '');
-    } catch {
-      return null;
-    }
-  }
-
-  function resolveDefaultWsUrl() {
-    const candidates = [
-      window.VAMP_WS_URL,
-      window.VITE_VAMP_WS_URL,
-      readMeta('vamp-ws-default'),
-      WS_DEFAULT_PROD,
-      WS_DEFAULT_FALLBACK,
-    ];
-
-    for (const candidate of candidates) {
-      const normalized = normalizeWsUrl(candidate);
-      if (normalized) return normalized;
-    }
-    return WS_DEFAULT_FALLBACK;
-  }
-
   function getBuildWsUrl() {
     try {
       if (globalThis?.VAMP_WS_URL) return globalThis.VAMP_WS_URL;
@@ -759,16 +725,39 @@
     });
   }
 
+  function collectSettings() {
+    return {
+      wsUrl: els.wsUrl?.value?.trim() || '',
+      scanUrl: els.scanUrl?.value?.trim() || '',
+      email: els.email?.value?.trim() || '',
+      name: els.name?.value?.trim() || '',
+      org: els.org?.value?.trim() || '',
+      year: els.year?.value ? Number(els.year.value) : undefined,
+      month: els.month?.value ? Number(els.month.value) : undefined,
+      ask: els.askText?.value || ''
+    };
+  }
+
+  function saveSettings() {
+    const settings = collectSettings();
+    try {
+      chrome.storage?.local?.set({ vamp_settings: settings });
+    } catch (err) {
+      console.warn('[VAMP] Unable to persist settings', err);
+    }
+    return settings;
+  }
+
   function restoreSettings() {
     return new Promise((resolve) => {
       const applySettings = (s = {}) => {
         if (els.wsUrl && s.wsUrl)  els.wsUrl.value = s.wsUrl;
         if (els.scanUrl && s.scanUrl) els.scanUrl.value = s.scanUrl;
-        if (els.email && s.email)  els.email.value = s.email;
-        if (els.name  && s.name)   els.name.value  = s.name;
-        if (els.org   && s.org)    els.org.value   = s.org;
-        if (els.year  && s.year)   els.year.value  = String(s.year);
-        if (els.month && s.month)  els.month.value = String(s.month);
+        if (els.email)  els.email.value = s.email || '';
+        if (els.name)   els.name.value  = s.name || '';
+        if (els.org)    els.org.value   = s.org || '';
+        if (els.year && s.year)   els.year.value  = String(s.year);
+        if (els.month && s.month) els.month.value = String(s.month);
         if (els.askText && typeof s.ask === 'string') els.askText.value = s.ask;
         resolve(s);
       };
@@ -792,7 +781,7 @@
     const tabUrl = await deriveActiveTabWsUrl();
     if (tabUrl) return tabUrl;
 
-    return PROD_WS_FALLBACK;
+    return resolveDefaultWsUrl();
   }
 
   function applyResolvedWsUrl(url) {
@@ -909,6 +898,10 @@
   }
 
   function connectWS(url) {
+    if (wsOwner === 'service_worker') {
+      requestWsStatus();
+      return;
+    }
     clearTimeout(reconnectTimer);
     wsUrlCurrent = url || wsUrlCurrent || wsUrlDefault;
     setConnectionStatus('Connecting...', 'scanning');
@@ -927,13 +920,24 @@
     });
   }
 
-  function sendWS(obj) {
+  function sendWS(payload) {
+    if (!payload || typeof payload !== 'object') return;
+
+    if (wsOwner === 'service_worker') {
+      try {
+        chrome.runtime?.sendMessage({ type: 'VAMP_WS_SEND', payload });
+      } catch (err) {
+        logAnswer(`Failed to send message to background: ${err?.message || err}`, 'error');
+      }
+      return;
+    }
+
     if (!SocketIOManager.isConnected()) {
       logAnswer('Not connected - reconnecting...', 'warning');
       connectWS(resolveActiveWsUrl());
       setTimeout(() => {
         if (SocketIOManager.isConnected()) {
-          SocketIOManager.send(obj);
+          SocketIOManager.send(payload);
           logAnswer('Command sent after reconnect', 'success');
         } else {
           logAnswer('Failed to reconnect for command', 'error');
@@ -943,7 +947,7 @@
     }
 
     try {
-      SocketIOManager.send(obj);
+      SocketIOManager.send(payload);
     } catch (e) {
       logAnswer(`Failed to send command: ${e.message}`, 'error');
     }
@@ -952,9 +956,13 @@
   // ---------- Enhanced Message Handling ----------
   function handleMessage(raw) {
     let msg = null;
-    try {
-      msg = JSON.parse(raw);
-    } catch {
+    if (typeof raw === 'string') {
+      try { msg = JSON.parse(raw); } catch { msg = null; }
+    } else if (raw && typeof raw === 'object') {
+      msg = raw.data && typeof raw.data === 'string' ? (() => { try { return JSON.parse(raw.data); } catch { return raw; } })() : raw;
+    }
+
+    if (!msg || typeof msg !== 'object') {
       logAnswer('Invalid message received', 'error');
       return;
     }
@@ -963,9 +971,10 @@
     const data = (msg.data && typeof msg.data === 'object') ? msg.data : {};
 
     if (msg.ok === false) {
-      setScanNote(`Error: ${msg.error || 'Unknown error'}`);
-      logAnswer(`❌ ${action} failed: ${msg.error || 'Unknown error'}`, 'error');
-      isBusy = false; 
+      const errText = msg.error || msg.message || 'Unknown error';
+      setScanNote(`Error: ${errText}`);
+      logAnswer(`❌ ${action || 'Command'} failed: ${errText}`, 'error');
+      isBusy = false;
       enableControls(true);
       setStatus('Error', 'error');
       stopHeartbeat();
@@ -980,11 +989,10 @@
         lastPhase = 'auth';
         lastPct = 5;
         setProgressPct(5, true);
-        setScanNote('Initializing Office365 scan...');
+        setScanNote('Authenticating...');
         setStatus('Scanning...', 'scanning');
         startHeartbeat();
-        
-        // Set scan timeout (5 minutes)
+
         clearTimeout(scanTimeout);
         scanTimeout = setTimeout(() => {
           if (isBusy) {
@@ -992,34 +1000,27 @@
             setScanNote('Scan timeout - check backend');
           }
         }, 300000);
-        
+
         logAnswer('Office365 scan started successfully', 'success');
         break;
       }
-      
+
       case 'SCAN_ACTIVE/PROGRESS': {
-        const pct = typeof data.pct === 'number' ? data.pct : (Number(data.progress || 0) * 100);
-        const note = data.note || data.status || data.phase || '';
-        lastPct = Math.max(5, Math.min(95, Number(pct) || 0));
-        lastPhase = String(data.phase || 'progress');
-        setProgressPct(lastPct);
-        setScanNote(note);
-        break;
-      }
-
-      case 'PROGRESS': {
-        const pctRaw = (typeof data.percent === 'number') ? data.percent : msg.percent;
-        const pct = Math.max(5, Math.min(95, (Number(pctRaw || 0) || 0) * 100));
+        const pctRaw = typeof data.pct === 'number' ? data.pct : (Number(data.progress || 0) * 100);
+        const pct = Math.max(5, Math.min(98, Number.isFinite(pctRaw) ? pctRaw : 0));
+        const phase = (data.phase || '').toString() || 'progress';
+        const scanNotes = {
+          auth: 'Authenticating...',
+          collect: 'Collecting Outlook mail...',
+          deepread: 'Deep reading attachments...',
+          score: 'Scoring evidence...',
+          store: 'Storing evidence...'
+        };
+        const note = data.note || data.status || scanNotes[phase] || 'Processing...';
         lastPct = pct;
+        lastPhase = phase;
         setProgressPct(pct);
-        setScanNote(data.note || msg.note || 'Processing...');
-        break;
-      }
-
-      case 'BATCH': {
-        const c = Number(data.count || msg.count || 0);
-        setScanNote(`Processed ${c} Office365 items...`);
-        logAnswer(`📦 Batch processed: ${c} Office365 items`, 'info');
+        setScanNote(note);
         break;
       }
 
@@ -1030,14 +1031,16 @@
         setProgressPct(100);
         const added = data.added || msg.added || 0;
         const total = data.total_evidence || data.total || msg.total_evidence || 0;
-        setScanNote(`Complete - ${added} new items, ${total} total`);
-        logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
         const brainSummary = data.brain_summary || msg.brain_summary || data.summary || msg.summary || '';
         const summaryText = brainSummary || `Scan complete. ${added} new items recorded.`;
+
+        setScanNote(`Complete - ${added} new items, ${total} total`);
+        logAnswer(`✅ Office365 scan complete! ${added} new items, ${total} total evidence`, 'success');
         updateBrainSummary(summaryText, { added, total });
         if (summaryText) {
           logAnswer(`🧠 ${summaryText}`, 'info');
         }
+
         const toolList = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         recordToolFeedback(toolList, 'Brain Scan');
         enableControls(true);
@@ -1045,26 +1048,7 @@
         stopHeartbeat();
         clearTimeout(scanTimeout);
         playOpenSound();
-        
-        // Refresh evidence display
-        refreshEvidenceDisplay();
-        break;
-      }
-      
-      case 'SCAN_ACTIVE/DONE': {
-        isBusy = false;
-        lastPhase = 'store';
-        lastPct = 100;
-        setProgressPct(100);
-        setScanNote(data.note || 'Office365 scan completed');
-        logAnswer('✅ Office365 scan finished', 'success');
-        enableControls(true);
-        setConnectionStatus('Connected', 'connected');
-        stopHeartbeat();
-        clearTimeout(scanTimeout);
-        
-        // Refresh evidence display
-        refreshEvidenceDisplay();
+        onGetState();
         break;
       }
 
@@ -1078,7 +1062,6 @@
         break;
       }
 
-      // Chat responses
       case 'ASK': {
         const answer = (data.answer || msg.answer || '').toString();
         const modeRaw = data.mode || msg.mode || 'ask';
@@ -1086,12 +1069,10 @@
         const tools = Array.isArray(data.tools) ? data.tools : (Array.isArray(msg.tools) ? msg.tools : []);
         const context = mode === 'brain_scan' ? 'brain' : (mode === 'assessor_strict' ? 'assessor' : 'ask');
 
-        if (mode !== 'brain_scan') {
-          if (tools.length) {
-            recordToolFeedback(tools, 'Ask');
-          } else {
-            recordToolFeedback([], 'Ask');
-          }
+        if (tools.length) {
+          recordToolFeedback(tools, context === 'brain' ? 'Brain Scan' : 'Ask');
+        } else {
+          recordToolFeedback([], context === 'brain' ? 'Brain Scan' : 'Ask');
         }
 
         if (answer) {
@@ -1122,10 +1103,6 @@
         break;
       }
 
-      // Other actions
-      case 'ENROL':
-        logAnswer('👤 Profile enrolled successfully', 'success');
-        break;
       case 'FINALISE_MONTH':
         logAnswer('🔒 Month finalized and locked', 'success');
         break;
@@ -1134,6 +1111,9 @@
         break;
       case 'COMPILE_YEAR':
         logAnswer(`📊 Year CSV compiled: ${data.path || msg.path || 'Unknown location'}`, 'success');
+        break;
+      case 'ENROL':
+        logAnswer('👤 Profile enrolled successfully', 'success');
         break;
 
       default:
@@ -1145,18 +1125,6 @@
         break;
     }
   }
-
-  chrome.runtime?.onMessage.addListener((msg) => {
-    if (msg?.type === 'WS_STATUS') {
-      applyWorkerStatus(msg.state);
-    }
-    if (msg?.type === 'WS_EVENT' && msg.payload) {
-      logAnswer(`Background event: ${msg.payload}`, 'info');
-    }
-    if (msg?.type === 'PONG') {
-      logAnswer('Service worker responded to ping', 'success');
-    }
-  });
 
   function extractEvidenceFromYearDoc(yearDoc) {
     const evidence = [];
@@ -1217,6 +1185,34 @@
     return { year: y, month: m };
   }
 
+  function isValidEmail(email = '') {
+    return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email);
+  }
+
+  function validateScanContext(email, scanUrl) {
+    if (!isValidEmail(email)) {
+      logAnswer('Please provide a valid email address before scanning', 'error');
+      els.email?.focus();
+      return false;
+    }
+
+    if (!scanUrl) {
+      logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
+      setScanNote('Waiting for scan URL');
+      return false;
+    }
+
+    const host = (() => {
+      try { return new URL(scanUrl).hostname; } catch { return ''; }
+    })();
+    const trusted = /outlook\.(office|live|office365)\.com$/i.test(host) || /(\.sharepoint\.com|\.my\.sharepoint\.com|onedrive\.live\.com)$/i.test(host);
+    if (!trusted) {
+      logAnswer('Warning: active tab is not an Outlook/OneDrive domain. Ensure the scan URL is correct.', 'warning');
+    }
+
+    return true;
+  }
+
   function coerceMessages(text) {
     const t = (text || '').trim();
     if (!t) return [];
@@ -1225,8 +1221,8 @@
 
   function onEnrol() {
     const s = currentSettings();
-    if (!s.email) {
-      logAnswer('Please enter an email address', 'error');
+    if (!isValidEmail(s.email)) {
+      logAnswer('Please enter a valid email address', 'error');
       els.email?.focus();
       return;
     }
@@ -1251,17 +1247,7 @@
     const { year, month } = getYearMonth();
     const scanUrl = await resolveScanUrl();
 
-    if (!s.email) {
-      logAnswer('Please enter your email before scanning', 'error');
-      els.email?.focus();
-      return;
-    }
-
-    if (!scanUrl) {
-      logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
-      setScanNote('Waiting for scan URL');
-      return;
-    }
+    if (!validateScanContext(s.email, scanUrl)) return;
 
     isBusy = true;
     enableControls(false);
@@ -1289,17 +1275,7 @@
     const { year, month } = getYearMonth();
     const scanUrl = await resolveScanUrl();
 
-    if (!s.email) {
-      logAnswer('Please enter your email before scanning', 'error');
-      els.email?.focus();
-      return;
-    }
-
-    if (!scanUrl) {
-      logAnswer('No scan URL detected. Enter a Scan URL or open the target tab before scanning.', 'error');
-      setScanNote('Waiting for scan URL');
-      return;
-    }
+    if (!validateScanContext(s.email, scanUrl)) return;
 
     isBusy = true;
     enableControls(false);
