@@ -49,7 +49,7 @@ async def _run_scan_local(self, sid: str, msg: dict) -> None:
     """
     try:
         folder_path = msg.get("folder_path")
-            if not folder_path:
+        if not folder_path:
         files = msg.get("files") or []
         if files:
             first = files[0]
