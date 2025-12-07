@@ -19,9 +19,12 @@ from flask_socketio import SocketIO
 
 from .. import STORE_DIR
 from ..settings import VAMP_AGENT_ENABLED
-try:  # pragma: no cover - optional dependency during tests# Ollama client removed - no AI API dependencies
-    # These are stubs for compatibility    analyze_feedback_with_ollama = None  # type: ignore[assignment]
-    ask_ollama = None  # type: ignore[assignment]try:  # pragma: no cover - Playwright may be optional in tests
+
+# AI helpers are optional; initialise safe defaults to avoid hard dependencies.
+analyze_feedback_with_ollama = None  # type: ignore[assignment]
+ask_ollama = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - Playwright may be optional in tests
     from ..vamp_agent import run_scan_active_ws
 except Exception:  # pragma: no cover - degrade gracefully when agent missing
     run_scan_active_ws = None  # type: ignore[assignment]

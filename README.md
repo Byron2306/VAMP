@@ -52,8 +52,10 @@ VAMP/
 │   └── extension/        # Chrome extension source (incl. icons/, sounds/)
 ├── requirements.txt
 └── scripts/
-    ├── setup_backend.ps1
-    └── setup_backend.bat
+    ├── setup_backend.bat     # one-click Windows bootstrap
+    ├── quick_restart_backend.bat
+    ├── refresh_state.py
+    └── SETUP_GUIDE.md
 ```
 
 ## 🚀 Features
@@ -109,7 +111,9 @@ The server exposes a REST API on `http://localhost:8080/api/*` that powers:
 
 > `backend.ws_bridge` and the browser extension now communicate via the agent server. Existing automation entrypoints (`vamp_agent.py`) continue to function but source credentials and configuration exclusively from the agent runtime.
 
-If you prefer the Windows helper, run `scripts\setup_backend.bat`. The script performs a lightweight health check before launching the REST API and WebSocket bridge, so you'll immediately see whether the backend is ready. No API keys or cloud endpoints are required.
+Hosts and ports follow the architecture defaults (`VAMP_AGENT_HOST=127.0.0.1`, `VAMP_AGENT_PORT=8080`).
+
+If you prefer the Windows helper, run `scripts\setup_backend.bat` (see [`docs/SETUP_BACKEND.md`](docs/SETUP_BACKEND.md)). It provisions the virtual environment, installs requirements and Playwright browsers, then starts `backend.app_server`. AI dependencies are optional; the script will print that Ollama is optional and continue.
 
 ### 3b. 🔍 Inspect the agent status live
 
@@ -133,9 +137,11 @@ Open `frontend/dashboard/index.html` in a modern browser to view health metrics,
 
 ### 5. 🧬 Set Environment Variables (Optional)
 
-Optional safety toggle:
+Optional flags (see [`docs/SETUP_BACKEND.md`](docs/SETUP_BACKEND.md) for more):
 
-- `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run the dashboard read-only without triggering scans.
+- `VAMP_AGENT_HOST` / `VAMP_AGENT_PORT` (defaults: `127.0.0.1:8080`) — bind address for REST + Socket.IO.
+- `VAMP_AGENT_ENABLED` (default: `0`/`false`) — gate the agent + SocketIO bridge. Set to `1` to allow the Playwright agent to start and enqueue evidence; leave unset/`0` to run the dashboard read-only.
+- `START_WS_BRIDGE` (default: `0`) — start the legacy `backend.ws_bridge` helper (listens on `APP_HOST`/`APP_PORT`, default `127.0.0.1:8765`).
 
 ### Session-state first login and refresh
 

@@ -29,6 +29,7 @@ from email.utils import parsedate_to_datetime
 
 OCR_AVAILABLE = False
 _OCR_ERROR: Optional[str] = None
+_OCR_STATUS_LOGGED = False
 
 try:
     from PIL import Image  # type: ignore
@@ -1609,13 +1610,23 @@ async def run_scan_active(
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("vamp_agent")
 
-if OCR_AVAILABLE:
-    logger.info("OCR fallback enabled for scraper text extraction")
-else:
-    if _OCR_ERROR:
-        logger.info("OCR fallback disabled: %s", _OCR_ERROR)
+
+def _log_ocr_status_once() -> None:
+    global _OCR_STATUS_LOGGED
+    if _OCR_STATUS_LOGGED:
+        return
+    _OCR_STATUS_LOGGED = True
+
+    if OCR_AVAILABLE:
+        logger.info("OCR fallback enabled for scraper text extraction")
     else:
-        logger.info("OCR fallback disabled: dependencies not installed")
+        if _OCR_ERROR:
+            logger.info("OCR fallback disabled: %s", _OCR_ERROR)
+        else:
+            logger.info("OCR fallback disabled: dependencies not installed")
+
+
+_log_ocr_status_once()
 
 # --------------------------------------------------------------------------------------
 # SCAN_ACTIVE Wrapper for WebSocket integration
