@@ -14,7 +14,6 @@ from pathlib import Path
 # Import the dispatcher and scan_and_score. Note: relative imports are used
 # because this file resides in backend/agent_app.
 from .ws_dispatcher import WSActionDispatcher
-from ..vamp_master import scan_and_score
 
 
 def _handle_scan_local(self, sid: str, msg: dict) -> None:
@@ -28,6 +27,8 @@ def _handle_scan_local(self, sid: str, msg: dict) -> None:
         sid: The websocket session ID.
         msg: The message payload containing folder_path, kpa, year, month.
     """
+        # Import scan_and_score inside function to avoid circular import
+    from ..vamp_master import scan_and_score
     # Notify client that scan is starting
     self._logger.info("SCAN_LOCAL requested")
     self._send_ws(sid, "SCAN_LOCAL/STARTED", {"message": "Local scan started"})
