@@ -53,8 +53,7 @@ async def _run_scan_local(self, sid: str, msg: dict) -> None:
         files = msg.get("files") or []
         if files:
             first = files[0]
-            if isinstance(firs, str) and '/' in first:
-                folder_path = first.split('/')[0]
+            if isinstance(first, str) and '/' in first:                folder_path = first.split('/')[0]
             else:
                 folder_path = str(first)
         else:
