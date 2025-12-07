@@ -1,5 +1,6 @@
 
 // content-script.js — DOM-only preview scrapers for Outlook, OneDrive, Google Drive, and eFundi.
+// Legacy helper kept for lightweight overlays; primary scans are handled by the backend.
 // Purpose: provide a fast local "skim" of currently open pages for instant feedback in the popup UI.
 // Heavy lifting (full Playwright scan + classification) is done by the Python backend.
 //
