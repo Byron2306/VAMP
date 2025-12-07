@@ -66,6 +66,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+# OCR support (optional - for scanned PDFs)
+OCR_AVAILABLE = False
+_OCR_ERROR = None
+try:
+    import pytesseract
+    from PIL import Image
+    from pdf2image import convert_from_path
+    OCR_AVAILABLE = True
+except ImportError as e:
+    _OCR_ERROR = str(e)
+
 # -------------------------
 # Paths & Brain scaffolding
 # -------------------------
@@ -183,6 +194,27 @@ def txt_from_pdf(path: Path) -> str:
                 text += "\n" + "\n".join(rows)
     except Exception:
         pass
+    
+    # OCR fallback for scanned PDFs (if text extraction failed)
+    if (not text or len(text.strip()) < 50) and OCR_AVAILABLE:
+        try:
+            print(f"[OCR] Extracting text from scanned PDF: {path.name}")
+            images = convert_from_path(str(path), dpi=300)
+            ocr_text = []
+            for i, img in enumerate(images):
+                page_text = pytesseract.image_to_string(img, config='--psm 6')
+                if page_text.strip():
+                    ocr_text.append(f"[Page {i+1}]\n{page_text}")
+            if ocr_text:
+                text = "\n\n".join(ocr_text)
+                print(f"[OCR] Extracted {len(text)} characters from {len(images)} pages")
+            else:
+                print(f"[OCR] No text found in {path.name}")
+        except Exception as e:
+            print(f"[OCR] Failed for {path.name}: {e}")
+    elif not text or len(text.strip()) < 50:
+        print(f"[WARNING] No text extracted from {path.name} (OCR not available)")
+
     return text
 
 def txt_from_docx(path: Path) -> str:
@@ -510,3 +542,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
