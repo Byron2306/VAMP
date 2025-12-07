@@ -52,8 +52,9 @@ if %errorLevel% equ 0 (
     )
     
     REM Refresh environment variables
-    refreshenv
-    echo [OK] Chocolatey installed successfully.
+    REM Manually refresh PATH for current session
+    set "PATH=%PATH%;C:\ProgramData\chocolatey\bin"
+    echo [OK] Chocolatey installed successfully.   
 )
 echo.
 
