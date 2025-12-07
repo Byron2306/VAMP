@@ -163,6 +163,23 @@ curl -X POST http://localhost:8080/api/auth/password \\
 
 Audit entries for session refreshes and password updates are written to `agent_app/auth.log` for troubleshooting.
 
+## 🚦 Quick smoke test (end-to-end)
+
+1. **Run the backend**
+   - `python -m backend.app_server` (binds REST + Socket.IO to `http://127.0.0.1:8080`).
+   - Wait for the log line announcing the Socket.IO endpoint; leave this terminal running.
+2. **Load the extension in Chrome**
+   - Visit `chrome://extensions`, enable **Developer mode**, and click **Load unpacked**.
+   - Select `frontend/extension/`; the popup will default to `http://127.0.0.1:8080` for both API and WebSocket.
+3. **Do the first Outlook scan**
+   - Open Outlook in a tab and click the VAMP toolbar icon.
+   - Verify the popup shows **Connected**; if not, click **Reconnect**.
+   - Enter your email, year, and month (and optionally a custom sign-in URL), then press **Scan Active**.
+   - Watch the progress bar and evidence list populate; the status should reach **Complete**.
+4. **Export CSV**
+   - From the same popup, pick the year/month and click **Export Month CSV** to write a CSV under `backend/data/store/<uid>/<year>/reports/`.
+   - Use **Compile Year CSV** if you want the full academic year in one file.
+
 ## 🧠 Usage
 
 ### Start the backend WebSocket bridge (optional for extension workflows):
@@ -198,6 +215,12 @@ The bridge now relies on the agent server for configuration and authentication. 
 | OneDrive | ✅ | Uses state restore for auth |
 | GoogleDrive | ✅ | Uses persistent context |
 | eFundi | ✅ | No auth needed |
+
+## 🛠️ Troubleshooting
+
+- **WebSocket connection failed**: Ensure `python -m backend.app_server` is running and reachable at `http://127.0.0.1:8080`. If you changed ports, update `frontend/extension/config.json` or `manifest.json` accordingly, then reload the unpacked extension.
+- **`chrome-extension://…` is not an accepted origin**: Set `VAMP_CORS_ALLOWED_ORIGINS=*` (or add your extension ID explicitly) before starting `backend.app_server` so Socket.IO accepts the extension origin. Restart the backend after changing the env var.
+- **Automated login crashed / Playwright not installed**: Install the browsers with `python -m playwright install chromium` (from your virtualenv) and retry. If headless automation still fails, fall back to manual session capture via `/api/auth/session/refresh` as described above.
 | NextCloud | ⚠️ | Placeholder - manual add required |
 
 ## 📁 Key Files
