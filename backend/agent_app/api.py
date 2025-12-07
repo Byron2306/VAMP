@@ -37,6 +37,9 @@ def get_health() -> Dict[str, object]:
     state = agent_state()
     health = state.health()
     return {
+        "status": "ok",
+        "message": f"{len(health.connectors)} connectors, {len(health.auth_sessions)} sessions, {health.evidence_summary.get('total', 0)} evidence items",
+        "timestamp": health.last_updated,
         "connectors": health.connectors,
         "auth_sessions": health.auth_sessions,
         "evidence": health.evidence_summary,
