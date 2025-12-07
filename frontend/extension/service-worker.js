@@ -270,3 +270,24 @@ chrome.notifications.onClicked.addListener(() => {
 self.addEventListener('unhandledrejection', (ev) => {
   console.warn('Unhandled promise rejection in service-worker:', ev.reason);
 });
+
+// ---------- Auto-connect on service worker startup ----------
+// Only attempt connection if not already connected to avoid conflicts
+(async () => {
+    try {
+        // Wait a short delay to ensure service worker is fully initialized
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Check if we're already connected before attempting auto-connect
+        if (wsStatus === 'disconnected' && !socket) {
+            const defaultUrl = await getDefaultWsUrl();
+            console.log('[VAMP][SW] Auto-connecting to:', defaultUrl);
+            await connectSocket(defaultUrl);
+        } else {
+            console.log('[VAMP][SW] Skip auto-connect, current status:', wsStatus);
+        }
+    } catch (err) {
+        console.warn('[VAMP][SW] Auto-connect failed:', err);
+        // Don't throw - allow service worker to continue functioning
+    }
+})();
