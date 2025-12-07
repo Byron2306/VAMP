@@ -207,8 +207,20 @@ class VampStore:
     ) -> Dict[str, Any]:
         """
         Append items to the month, deduplicate, and return the updated month doc.
+        If the month is locked, no changes are written and a warning is logged.
         """
         month_doc = self._ensure_month_doc(email, year, month)
+
+        if month_doc.get("locked"):
+            logger.warning(
+                "Month %s-%02d is locked for %s; ignoring %d incoming items",
+                year,
+                month,
+                email,
+                len(new_items),
+            )
+            return month_doc
+
         existing_keys = {self._dedup_key(it) for it in month_doc.get("items", [])}
         added = 0
 
@@ -264,9 +276,26 @@ class VampStore:
 
         csv_path = self.get_reports_dir(email, year) / f"{year}-{month:02d}-evidence.csv"
 
-        # Deterministic column order (authoritative + legacy)
-        authoritative = [
+        # Columns expected by popup users (core first) with backward-compatible extras
+        core_headers = [
+            "date",
+            "title",
+            "platform",
             "kpa",
+            "score",
+            "band",
+            "rationale",
+            "evidence_type",
+        ]
+        extra_headers = [
+            "source",
+            "subject",
+            "relpath",
+            "size",
+            "modified",
+            "hash",
+            "snippet",
+            "meta",
             "tier",
             "tier_rule",
             "values_score",
@@ -274,36 +303,42 @@ class VampStore:
             "policy_hits",
             "policy_hit_details",
             "must_pass_risks",
-            "score",
-            "band",
-            "rationale",
             "actions",
         ]
-        legacy = [
-            "source",
-            "title",
-            "date",
-            "platform",
-            "relpath",
-            "size",
-            "modified",
-            "hash",
-            "snippet",
-            "meta",
-        ]
-        headers = legacy + [c for c in authoritative if c not in legacy]
+        headers = core_headers + [h for h in extra_headers if h not in core_headers]
+
+        def _cell(key: str, value: Any) -> Any:
+            if key == "evidence_type":
+                return value or ""
+            if key == "kpa" and isinstance(value, list):
+                return ",".join(str(v) for v in value)
+            if key in {"values_hits", "policy_hits", "policy_hit_details", "must_pass_risks", "actions"}:
+                if isinstance(value, (list, dict)):
+                    try:
+                        return json.dumps(value, ensure_ascii=False)
+                    except Exception:
+                        return str(value)
+            if isinstance(value, list):
+                return ",".join(str(v) for v in value)
+            if isinstance(value, dict):
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    return str(value)
+            return value
 
         with csv_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
             writer.writeheader()
             for it in items:
-                row = {}
+                row: Dict[str, Any] = {}
                 for k in headers:
-                    row[k] = it.get(k, "")
-                # Ensure list fields become comma-separated strings
-                for k in ("kpa", "tier"):
-                    if isinstance(row[k], list):
-                        row[k] = ",".join(row[k])
+                    value = None
+                    if k == "evidence_type":
+                        value = it.get("evidence_type") or it.get("type") or it.get("source")
+                    else:
+                        value = it.get(k, "")
+                    row[k] = _cell(k, value)
                 writer.writerow(row)
 
         logger.info(f"Month CSV exported: {csv_path}")
@@ -331,8 +366,23 @@ class VampStore:
         csv_path = self.get_reports_dir(email, year) / f"{year}-evidence-yearly.csv"
 
         # Same column order as month export + _month at the front
-        authoritative = [
+        month_headers = [
+            "date",
+            "title",
+            "platform",
             "kpa",
+            "score",
+            "band",
+            "rationale",
+            "evidence_type",
+            "source",
+            "subject",
+            "relpath",
+            "size",
+            "modified",
+            "hash",
+            "snippet",
+            "meta",
             "tier",
             "tier_rule",
             "values_score",
@@ -340,36 +390,43 @@ class VampStore:
             "policy_hits",
             "policy_hit_details",
             "must_pass_risks",
-            "score",
-            "band",
-            "rationale",
             "actions",
         ]
-        legacy = [
-            "source",
-            "title",
-            "date",
-            "platform",
-            "relpath",
-            "size",
-            "modified",
-            "hash",
-            "snippet",
-            "meta",
-        ]
-        headers = ["_month"] + legacy + [
-            c for c in authoritative if c not in legacy
-        ]
+        headers = ["_month"] + month_headers
+
+        def _cell(key: str, value: Any) -> Any:
+            if key == "evidence_type":
+                return value or ""
+            if key == "kpa" and isinstance(value, list):
+                return ",".join(str(v) for v in value)
+            if key in {"values_hits", "policy_hits", "policy_hit_details", "must_pass_risks", "actions"}:
+                if isinstance(value, (list, dict)):
+                    try:
+                        return json.dumps(value, ensure_ascii=False)
+                    except Exception:
+                        return str(value)
+            if isinstance(value, list):
+                return ",".join(str(v) for v in value)
+            if isinstance(value, dict):
+                try:
+                    return json.dumps(value, ensure_ascii=False)
+                except Exception:
+                    return str(value)
+            return value
 
         with csv_path.open("w", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=headers, extrasaction="ignore")
             writer.writeheader()
             for row in all_rows:
-                # flatten lists
-                for k in ("kpa", "tier"):
-                    if isinstance(row.get(k), list):
-                        row[k] = ",".join(row[k])
-                writer.writerow(row)
+                serialised: Dict[str, Any] = {"_month": row.get("_month")}
+                for k in month_headers:
+                    value = None
+                    if k == "evidence_type":
+                        value = row.get("evidence_type") or row.get("type") or row.get("source")
+                    else:
+                        value = row.get(k, "")
+                    serialised[k] = _cell(k, value)
+                writer.writerow(serialised)
 
         logger.info(f"Year CSV exported: {csv_path}")
         return csv_path
@@ -378,12 +435,24 @@ class VampStore:
     # Evidence retrieval for UI
     # ------------------------------------------------------------------
     def get_evidence_for_display(
-        self, email: str, year: int, month: int
+        self, email: str, year: int, month: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Return the list of items for the UI table."""
-        path = self.get_items_path(email, year, month)
-        data = self._load_json(path)
-        return data.get("items", [])
+        """Return the list of items for the UI table.
+
+        If month is None, aggregates all months for the year.
+        """
+        if month is None:
+            items: List[Dict[str, Any]] = []
+            for m in range(1, 13):
+                items.extend(self.get_evidence_for_display(email, year, m))
+            return items
+
+        month_doc = self._load_json(self.get_month_path(email, year, month))
+        if not month_doc:
+            # Backward-compatible fallback to items.json
+            data = self._load_json(self.get_items_path(email, year, month))
+            return data.get("items", [])
+        return month_doc.get("items", [])
 
     # ------------------------------------------------------------------
     # Statistics
@@ -424,60 +493,39 @@ class VampStore:
     # ------------------------------------------------------------------
     # Year document (for GET_STATE)
     # ------------------------------------------------------------------
-    def get_year_doc(self, email: str, year: int) -> Dict[str, Any]:
-        """Return lightweight year metadata for dashboards."""
-        year_dir = self.get_year_dir(email, year)
-        if not year_dir.is_dir():
-            return {"year": year, "months": {}}
-
+    def get_year_doc(self, email: str, year: int, *, include_items: bool = False) -> Dict[str, Any]:
+        """Return year metadata, optionally with embedded month items for UI state."""
         months: Dict[str, Any] = {}
+
         for m in range(1, 13):
             month_path = self.get_month_path(email, year, m)
-            if not month_path.is_file():
-                continue
             doc = self._load_json(month_path)
+
+            if not doc and not include_items:
+                # Skip empty months for lightweight views
+                continue
+
+            items = list(doc.get("items", [])) if doc else []
             months[str(m)] = {
                 "month": m,
-                "locked": doc.get("locked", False),
-                "item_count": len(doc.get("items", [])),
-                "updated_at": doc.get("updated_at"),
-                "locked_at": doc.get("locked_at"),
+                "locked": bool(doc.get("locked") if doc else False),
+                "item_count": len(items),
+                "updated_at": (doc or {}).get("updated_at"),
+                "locked_at": (doc or {}).get("locked_at"),
             }
 
-        return {"year": year, "months": months}
+            if include_items:
+                months[str(m)]["items"] = items
+
+        payload: Dict[str, Any] = {"year": year, "months": months}
+        if include_items:
+            payload["total_items"] = sum(m.get("item_count", 0) for m in months.values())
+        return payload
 
     def get_year_doc_with_items(self, email: str, year: int) -> Dict[str, Any]:
         """Return a year document that includes month-level evidence items."""
 
-        base = self.get_year_doc(email, year)
-        months: Dict[str, Any] = {}
-        total_items = 0
-
-        for month_key, meta in base.get("months", {}).items():
-            try:
-                month_int = int(month_key)
-            except (TypeError, ValueError):
-                continue
-
-            month_doc = self._load_json(self.get_month_path(email, year, month_int))
-            if not month_doc:
-                month_doc = {}
-
-            items = list(month_doc.get("items", []))
-
-            meta_with_items = dict(meta)
-            locked_flag = month_doc.get("locked")
-            if locked_flag is None:
-                locked_flag = meta.get("locked", False)
-            meta_with_items["locked"] = bool(locked_flag)
-            meta_with_items["updated_at"] = month_doc.get("updated_at") or meta.get("updated_at")
-            meta_with_items["locked_at"] = month_doc.get("locked_at") or meta.get("locked_at")
-            meta_with_items["items"] = items
-
-            total_items += len(items)
-            months[month_key] = meta_with_items
-
-        return {"year": year, "months": months, "total_items": total_items}
+        return self.get_year_doc(email, year, include_items=True)
 
 
 # ----------------------------------------------------------------------
