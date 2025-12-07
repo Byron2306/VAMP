@@ -49,13 +49,12 @@ if not defined APP_PORT set "APP_PORT=8765"
 echo [INFO] Ollama optional: AI insights disabled if not running.
 
 echo [INFO] Starting unified backend on %HOST%:%PORT% ...
-start "VAMP Backend" cmd /k "cd /d %REPO_ROOT% && call \"%VENV_DIR%\Scripts\activate.bat\" && set \"VAMP_AGENT_HOST=%HOST%\" && set \"VAMP_AGENT_PORT=%PORT%\" && python -m backend.app_server"
+start "VAMP Backend" cmd /k "cd /d %REPO_ROOT% && call %VENV_DIR%\Scripts\activate.bat && set VAMP_AGENT_HOST=%HOST% && set VAMP_AGENT_PORT=%PORT% && python -m backend.app_server"
 if errorlevel 1 goto :error
 
 if /I "%LEGACY_WS%"=="1" (
     echo [INFO] Starting legacy WebSocket bridge on %APP_HOST%:%APP_PORT% ...
-    start "VAMP WebSocket Bridge" cmd /k "cd /d %REPO_ROOT% && call \"%VENV_DIR%\Scripts\activate.bat\" && set \"APP_HOST=%APP_HOST%\" && set \"APP_PORT=%APP_PORT%\" && python -m backend.ws_bridge"
-) else (
+    start "VAMP WebSocket Bridge" cmd /k "cd /d %REPO_ROOT% && call %VENV_DIR%\Scripts\activate.bat && set APP_HOST=%APP_HOST% && set APP_PORT=%APP_PORT% && python -m backend.ws_bridge") else (
     echo [INFO] Legacy ws_bridge not started (set START_WS_BRIDGE=1 to enable).
 )
 
