@@ -1,11 +1,100 @@
 // service-worker.js — VAMP (MV3)
 // Background responsibilities: alarms/reminders, notifications, evidence storage plumbing,
-// and offscreen audio for UI feedback. WebSocket connectivity is handled exclusively by the
-// popup via Socket.IO.
+// offscreen audio for UI feedback, and a single shared Socket.IO connection to the backend.
 
 const ICON_128 = 'icons/icon128.png';
 const DAILY_ALARM = 'vampDailyNudge';
 const OFFSCREEN_URL = chrome.runtime.getURL('offscreen.html');
+const DEFAULT_WS_URL = 'http://127.0.0.1:8080';
+
+let socket = null;
+let wsBaseUrl = DEFAULT_WS_URL;
+let wsStatus = 'disconnected';
+let socketIoLoader = null;
+
+async function getDefaultWsUrl() {
+  const manifest = chrome.runtime?.getManifest?.() || {};
+  const cfg = manifest.vampConfig || {};
+  const defaults = manifest.vamp_defaults || {};
+  return cfg.wsBaseUrl || cfg.ws_base_url || defaults.wsUrl || DEFAULT_WS_URL;
+}
+
+function broadcastWsStatus(status, extra = {}) {
+  wsStatus = status;
+  chrome.runtime.sendMessage({ type: 'VAMP_WS_STATUS', status, wsUrl: wsBaseUrl, ...extra }).catch?.(() => {});
+}
+
+function broadcastWsEvent(payload) {
+  chrome.runtime.sendMessage({ type: 'VAMP_WS_EVENT', payload }).catch?.(() => {});
+}
+
+async function ensureSocketIo() {
+  if (socketIoLoader) return socketIoLoader;
+  socketIoLoader = new Promise((resolve, reject) => {
+    try {
+      const url = chrome.runtime.getURL('vendor/socket.io.min.js');
+      importScripts(url);
+      if (typeof self.io === 'undefined') {
+        reject(new Error('Socket.IO client failed to load'));
+        return;
+      }
+      resolve(self.io);
+    } catch (err) {
+      console.warn('[VAMP][SW] Socket.IO load error', err);
+      reject(err);
+    }
+  });
+  return socketIoLoader;
+}
+
+function disconnectSocket() {
+  try {
+    socket?.removeAllListeners?.();
+    socket?.disconnect?.();
+  } catch (_) {}
+  socket = null;
+  wsStatus = 'disconnected';
+}
+
+async function connectSocket(targetUrl) {
+  wsBaseUrl = targetUrl || wsBaseUrl || (await getDefaultWsUrl());
+  await ensureSocketIo();
+
+  disconnectSocket();
+  broadcastWsStatus('connecting');
+
+  socket = self.io(wsBaseUrl, {
+    reconnection: true,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    transports: ['websocket', 'polling']
+  });
+
+  socket.on('connect', () => broadcastWsStatus('connected'));
+  socket.on('disconnect', (reason) => broadcastWsStatus('disconnected', { reason }));
+  socket.on('error', (error) => broadcastWsStatus('error', { error: error?.message || String(error) }));
+  socket.onAny((event, data) => {
+    if (event === 'connect' || event === 'disconnect' || event === 'error') return;
+    const payload = typeof data === 'string' ? data : JSON.stringify({ action: event, ...(typeof data === 'object' ? data : {}) });
+    broadcastWsEvent(payload);
+  });
+
+  return socket;
+}
+
+function sendSocketMessage(payload) {
+  if (!socket || socket.disconnected) {
+    broadcastWsStatus('disconnected');
+    return false;
+  }
+  try {
+    socket.emit('message', payload);
+    return true;
+  } catch (err) {
+    console.warn('[VAMP][SW] Failed to emit message', err);
+    return false;
+  }
+}
 
 // ---------- Install / Update ----------
 chrome.runtime.onInstalled.addListener(async () => {
@@ -125,6 +214,33 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: true });
       });
       return true;
+    }
+
+    if (msg.type === 'VAMP_WS_CONNECT') {
+      const target = typeof msg.wsUrl === 'string' && msg.wsUrl.trim() ? msg.wsUrl.trim() : await getDefaultWsUrl();
+      await connectSocket(target);
+      sendResponse?.({ ok: true, status: wsStatus, wsUrl: wsBaseUrl });
+      return;
+    }
+
+    if (msg.type === 'VAMP_WS_DISCONNECT') {
+      disconnectSocket();
+      sendResponse?.({ ok: true, status: wsStatus });
+      return;
+    }
+
+    if (msg.type === 'VAMP_WS_SEND') {
+      const sent = sendSocketMessage(msg.payload);
+      sendResponse?.({ ok: sent, status: wsStatus });
+      return;
+    }
+
+    if (msg.type === 'VAMP_WS_STATUS_REQ') {
+      if (wsStatus === 'disconnected' && !socket) {
+        wsBaseUrl = msg.wsUrl || wsBaseUrl || (await getDefaultWsUrl());
+      }
+      sendResponse?.({ ok: true, status: wsStatus, wsUrl: wsBaseUrl });
+      return;
     }
 
     if (msg.type === 'VAMP_SW_PING') {

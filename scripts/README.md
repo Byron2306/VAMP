@@ -8,17 +8,17 @@ This directory contains all the scripts needed to set up, manage, and troublesho
 
 ### For New Users (First Time Setup)
 
-1. **Double-click `setup_backend.bat`**
-   - This is ALL you need to do!
-   - Everything else happens automatically
-   - Takes 10-30 minutes depending on your system
+1. **Double-click `setup_backend.bat` in this folder**
+   - Creates `.venv`, installs requirements + Playwright browsers, and starts the canonical `backend.app_server` on `127.0.0.1:8080`.
+   - Nothing else is required. Let the two spawned Command Prompt windows stay open while you use VAMP.
+   - Takes 5–15 minutes depending on your system and Playwright download speed.
 
 ### For Existing Users (Restart Services)
 
-- **Double-click `quick_restart_backend.bat`** 
-  - Quick restart of services (skips setup checks)
-  - Use if services crash or you need to restart
-  - Takes ~30 seconds
+- **Double-click `quick_restart_backend.bat`**
+  - Quickly restarts the running services using the existing `.venv`.
+  - Use if services crash or you need a clean restart.
+  - Takes ~30 seconds.
 
 ---
 
@@ -29,15 +29,13 @@ This directory contains all the scripts needed to set up, manage, and troublesho
 **Purpose**: Complete first-time backend setup and launch
 
 **What it does**:
-- ✅ Verifies Python 3.10+ installation
+- ✅ Verifies Python is available
 - ✅ Creates Python virtual environment (`.venv`)
 - ✅ Installs all pip dependencies from `requirements.txt`
-- ✅ Installs Playwright browser binaries (2-5 minutes first time)
-- ✅ Detects Chrome browser installation
-- ✅ Checks Ollama AI server connectivity
-- ✅ Launches REST API server (port 8000)
-- ✅ Launches WebSocket bridge
-- ✅ Performs health checks
+- ✅ Installs Playwright browser binaries (one-time download)
+- ✅ Launches REST + Socket.IO server (`backend.app_server`) on `127.0.0.1:8080`
+- ✅ Optionally launches the legacy plain WebSocket bridge (`backend.ws_bridge`) if `START_WS_BRIDGE=1`
+- ✅ Performs a quick health check against `/api/health`
 - ✅ Shows clear status messages and next steps
 
 **How to run**:
@@ -50,16 +48,16 @@ cd scripts
 setup_backend.bat
 ```
 
-**Output**: Three new Command Prompt windows open:
+**Output**: Two Command Prompt windows open by default:
 1. Main setup window (closes after completion)
-2. REST API server window (keep open)
-3. WebSocket bridge window (keep open)
+2. REST + Socket.IO server window (keep open)
 
-**Time to completion**: 10-30 minutes (first time)
-- Python setup: 2-3 minutes
-- Playwright install: 2-5 minutes
-- Ollama model download (if needed): 5-10 minutes
-- Services launch: 30 seconds
+If `START_WS_BRIDGE=1` is set, a third window hosts the optional legacy bridge on port `8765`.
+
+**Time to completion**: ~5–15 minutes on first run
+- Python setup: 1–2 minutes
+- Playwright install: 2–5 minutes (first time only)
+- Services launch: ~30 seconds
 
 **What to do after**: See SETUP_GUIDE.md "Next Steps After Setup"
 
@@ -168,8 +166,7 @@ Includes:
 | "Python not found" | Install Python 3.10+ from python.org, check "Add to PATH" |
 | "Failed to install dependencies" | Run `python -m pip install --upgrade pip` first |
 | "Playwright failed" | Run `python -m playwright install --with-deps` manually |
-| "Ollama not running" | Download from ollama.ai, then run `ollama serve` in another terminal |
-| "REST API failed to start" | Port 8000 is in use, close other applications |
+| "REST API failed to start" | Port 8080 is in use, close other applications or set `VAMP_AGENT_PORT` |
 | "Services crash immediately" | Check error in Command Prompt window, see SETUP_GUIDE.md |
 
 **For detailed troubleshooting**: See SETUP_GUIDE.md "Troubleshooting" section
@@ -191,7 +188,7 @@ Includes:
 ```
 1. Double-click setup_backend.bat (or quick_restart_backend.bat if restarting)
 2. Wait for services to launch
-3. Open browser to http://localhost:8000/dashboard
+3. Open browser to http://127.0.0.1:8080/
 4. Load VAMP extension in Chrome
 5. Use the extension to trigger scans
 ```
@@ -243,11 +240,13 @@ python refresh_state.py outlook --identity user@example.com
 
 ### Customizing Port Numbers
 
-If port 8000 is in use, modify `backend/config.py` or pass environment variables:
+If port 8080 is in use, set an alternate host/port using environment variables before launching:
 
 ```batch
-set VAMP_API_PORT=8001
-quick_restart_backend.bat
+set VAMP_AGENT_HOST=0.0.0.0
+set VAMP_AGENT_PORT=9090
+set START_WS_BRIDGE=0
+setup_backend.bat
 ```
 
 ---
@@ -257,8 +256,8 @@ quick_restart_backend.bat
 - **OS**: Windows 10 or later
 - **Python**: 3.10 or later
 - **RAM**: 4GB minimum (8GB+ recommended)
-- **Disk**: 2GB minimum (for Playwright + Ollama models)
-- **Ports**: 8000 (REST API), 11434 (Ollama)
+- **Disk**: 2GB minimum (for Playwright downloads)
+- **Ports**: 8080 (REST + Socket.IO), 8765 (optional legacy WebSocket bridge if enabled)
 - **Browser**: Chrome (for extension features)
 
 ---
@@ -272,7 +271,7 @@ When services run in Command Prompt windows, all logs appear in real-time:
 - Backend errors and exceptions
 - Database queries
 
-**WebSocket Bridge Window**:
+**Optional WebSocket Bridge Window** (only when `START_WS_BRIDGE=1`):
 - Shows connected clients
 - Real-time event broadcasts
 - Connection/disconnection logs
