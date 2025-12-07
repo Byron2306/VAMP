@@ -11,7 +11,6 @@ import asyncio
 import datetime as _dt
 import json
 import logging
-import os
 import re
 import traceback
 from functools import partial
@@ -25,6 +24,7 @@ except ImportError:  # Compatibility for older deployments
 
 from . import STORE_DIR
 from .logging_utils import configure_quiet_logger, record_feedback_tag
+from .settings import APP_HOST, APP_PORT
 from .vamp_store import VampStore, _uid
 
 # --- Import agent ---
@@ -35,8 +35,6 @@ except Exception as e:
     run_scan_active_ws = None
 
 # --- Configuration ---
-APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
-APP_PORT = int(os.environ.get("APP_PORT", "8765"))
 STORE_DIR.mkdir(parents=True, exist_ok=True)
 store = VampStore(str(STORE_DIR))
 

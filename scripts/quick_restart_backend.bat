@@ -18,8 +18,10 @@ echo [INFO] This script restarts services without re-running setup.
 echo [INFO] For first-time setup, use: setup_backend.bat
 echo.
 
-set "REPO_ROOT=%CD%.."
+set "REPO_ROOT=%~dp0.."
 set "VENV_PATH=%REPO_ROOT%\.venv"
+set "LEGACY_WS=%START_WS_BRIDGE%"
+if not defined LEGACY_WS set "LEGACY_WS=0"
 
 REM Check if venv exists
 if not exist "%VENV_PATH%" (
@@ -47,16 +49,26 @@ echo.
 timeout /t 3 /nobreak
 
 echo.
-echo [INFO] Launching REST API server (port 8000)...
-start "VAMP REST API" cmd /k "cd /d %REPO_ROOT% && call %VENV_PATH%\Scripts\activate.bat && python -m backend.app_server"
+set "HOST=%VAMP_AGENT_HOST%"
+if not defined HOST set "HOST=127.0.0.1"
+set "PORT=%VAMP_AGENT_PORT%"
+if not defined PORT set "PORT=8080"
+set "APP_HOST=%APP_HOST%"
+if not defined APP_HOST set "APP_HOST=%HOST%"
+set "APP_PORT=%APP_PORT%"
+if not defined APP_PORT set "APP_PORT=8765"
+
+echo [INFO] Launching REST API server (port %PORT%)...
+start "VAMP REST API" cmd /k "cd /d %REPO_ROOT% && call %VENV_PATH%\Scripts\activate.bat && set \"VAMP_AGENT_HOST=%HOST%\" && set \"VAMP_AGENT_PORT=%PORT%\" && python -m backend.app_server"
 echo [OK] REST API server launched.
 
-echo [INFO] Waiting 3 seconds...
-timeout /t 3 /nobreak
-
-echo [INFO] Launching WebSocket bridge (port 8000)...
-start "VAMP WebSocket Bridge" cmd /k "cd /d %REPO_ROOT% && call %VENV_PATH%\Scripts\activate.bat && python -m backend.ws_bridge"
-echo [OK] WebSocket bridge launched.
+if /I "%LEGACY_WS%"=="1" (
+    echo [INFO] Launching legacy WebSocket bridge (port %APP_PORT%)...
+    start "VAMP WebSocket Bridge" cmd /k "cd /d %REPO_ROOT% && call %VENV_PATH%\Scripts\activate.bat && set \"APP_HOST=%APP_HOST%\" && set \"APP_PORT=%APP_PORT%\" && python -m backend.ws_bridge"
+    echo [OK] WebSocket bridge launched.
+) else (
+    echo [INFO] Legacy ws_bridge not started (set START_WS_BRIDGE=1 to enable).
+)
 
 echo.
 echo [INFO] Services are starting. Waiting 5 seconds for initialization...
@@ -64,7 +76,7 @@ timeout /t 5 /nobreak
 
 echo.
 echo [INFO] Running quick health check...
-python -c "import requests; r = requests.get('http://localhost:8000/api/health', timeout=5); print('REST API Status: OK' if r.status_code == 200 else 'REST API Status: FAILED')" 2>nul
+python -c "import requests; r = requests.get('http://%HOST%:%PORT%/api/health', timeout=5); print('REST API Status: OK' if r.status_code == 200 else 'REST API Status: FAILED')" 2>nul
 
 echo.
 echo ========================================================================

@@ -10,7 +10,7 @@ from .agent_app.api import api
 from .agent_app.app_state import agent_state
 from .agent_app.ws_dispatcher import WSActionDispatcher
 from .logging_utils import configure_quiet_logger
-from .settings import VAMP_AGENT_ENABLED
+from .settings import VAMP_AGENT_ENABLED, VAMP_AGENT_HOST, VAMP_AGENT_PORT
 
 logger = configure_quiet_logger(__name__, default_console_level=os.getenv("VAMP_LOG_LEVEL", "DEBUG"), file_name="agent_app.log")
 
@@ -96,8 +96,8 @@ def main() -> None:
     
     # Get host configuration - default to localhost for extension compatibility
     # For production, set VAMP_AGENT_HOST=0.0.0.0 to listen on all interfaces
-    host = os.getenv("VAMP_AGENT_HOST", "127.0.0.1")
-    port = int(os.getenv("VAMP_AGENT_PORT", "8080"))
+    host = VAMP_AGENT_HOST
+    port = VAMP_AGENT_PORT
     
     logger.info("Starting VAMP agent-as-app server on %s:%s", host, port)
     logger.info("Extension should connect to: ws://%s:%s", host, port)

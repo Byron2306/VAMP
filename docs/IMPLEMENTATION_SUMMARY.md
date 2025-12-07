@@ -188,8 +188,8 @@ cd scripts
 This will:
 - Create virtual environment
 - Install all dependencies
-- Start REST API (port 8000)
-- Start WebSocket bridge
+- Start REST + Socket.IO server (port 8080)
+- Optionally start WebSocket bridge (set START_WS_BRIDGE=1)
 - Show health check results
 
 **New with EvidenceTransformer**:

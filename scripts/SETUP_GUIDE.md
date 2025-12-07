@@ -23,17 +23,12 @@ The `setup_backend.bat` script will:
 - Install all pip packages from `requirements.txt`
 - Install Playwright browser binaries (2-5 minutes first time)
 - Detect Chrome browser installation
-
-✅ **AI Server (Ollama)**
-- Check if Ollama is running at `http://127.0.0.1:11434`
-- Verify Gemma3:4b-b model is installed
-- Offer to download the model if missing (5-10 minutes)
-- Continue in offline mode if Ollama isn't available
+- Skip AI setup entirely (Ollama/Tesseract are optional; AI insights are disabled if not running)
 
 ✅ **Backend Services**
-- Launch REST API server (port 8000)
-- Launch WebSocket bridge (port 8000)
-- Both run in separate Command Prompt windows
+- Launch REST API + Socket.IO server (default `127.0.0.1:8080`)
+- Optionally start the legacy WebSocket bridge when `START_WS_BRIDGE=1` (default disabled)
+- Services run in separate Command Prompt windows
 - Perform health checks
 
 ✅ **Status Reporting**
@@ -64,24 +59,13 @@ The `setup_backend.bat` script will:
 [OK] Chrome found in PATH.
 ```
 
-### Phase 6: Ollama AI Server (~5-10 minutes if downloading model)
+### Phase 6: Services Launch (~30 seconds)
 ```
-[6/7] Checking Ollama AI server...
-[INFO] Testing connection to http://127.0.0.1:11434...
-
-[OK] Ollama server is running and reachable.
-[INFO] Checking Ollama models...
-[INFO] Downloading Gemma3:4b-b model (this may take 5-10 minutes)...
-[OK] Gemma model is available.
-```
-
-### Phase 7: Services Launch (~30 seconds)
-```
-[7/7] Launching VAMP backend services...
-[INFO] Starting REST API server (port 8000)...
+[6/6] Launching VAMP backend services...
+[INFO] Starting REST API server (port 8080)...
 [OK] REST API server launched in new window.
 
-[INFO] Starting WebSocket bridge (port 8000)...
+[INFO] Starting WebSocket bridge (port 8765)... (only when START_WS_BRIDGE=1)
 [OK] WebSocket bridge launched in new window.
 
 [INFO] Performing health checks...
@@ -92,12 +76,11 @@ SUCCESS! VAMP Backend is Ready
 ========================================================================
 
 [OK] All services are running:
-  - REST API: http://localhost:8000/api/*
-  - WebSocket Bridge: ws://localhost:8000
-  - Ollama AI: http://127.0.0.1:11434 (if available)
+  - REST API + Socket.IO: http://localhost:8080/api/*
+  - WebSocket Bridge: ws://localhost:8765 (if enabled)
 
 [INFO] Next steps:
-  1. Open your browser and navigate to: http://localhost:8000/dashboard
+  1. Open your browser and navigate to: http://localhost:8080/dashboard
   2. Load the VAMP extension in Chrome (chrome://extensions)
   3. Log into your email/cloud accounts in Chrome
   4. Enroll in the extension using your email
@@ -135,22 +118,13 @@ SUCCESS! VAMP Backend is Ready
 - Run the installer
 - After install, Ollama auto-starts as a background service
 
-**Solution B - Start Ollama:**
-- If already installed, open Command Prompt/Terminal
-- Run: `ollama serve`
-- This starts the local API at `http://127.0.0.1:11434`
-- Keep this terminal open while using VAMP
-
-**Solution C - Continue without AI:**
-- The setup script can continue in offline mode
-- AI-powered features will be disabled
-- Basic scanning and session management will still work
+AI runtimes are optional. If you do not have a local AI endpoint running, the backend simply disables AI-assisted insights and continues.
 
 ### "REST API failed to start"
 **Solution:**
-- Port 8000 may be in use by another application
+- Port 8080 may be in use by another application
 - Find and close the other application
-- Or modify the backend code to use a different port
+- Or modify `VAMP_AGENT_PORT` to use a different port
 - Then run the setup script again
 
 ### "Chrome not found"
@@ -165,7 +139,7 @@ SUCCESS! VAMP Backend is Ready
 ## Next Steps After Setup
 
 ### 1. Access the Dashboard
-- Open browser: `http://localhost:8000/dashboard`
+- Open browser: `http://localhost:8080/dashboard`
 - View connector status, sessions, and evidence
 - Monitor health metrics
 
@@ -210,10 +184,10 @@ Press **CTRL+C** in any Command Prompt window to stop that service.
 ## System Requirements
 
 - **OS**: Windows 10 or later (with Admin access for first-time setup)
-- **Disk Space**: ~2GB minimum (for Playwright + Ollama models)
-- **RAM**: 4GB minimum (8GB+ recommended for AI features)
+- **Disk Space**: ~2GB minimum (for Playwright browsers)
+- **RAM**: 4GB minimum (8GB+ recommended when running Playwright + OCR)
 - **Network**: Internet access for downloads and API calls
-- **Ports**: 8000 (REST API), 11434 (Ollama)
+- **Ports**: 8080 (REST + Socket.IO), 8765 (legacy WebSocket bridge if enabled)
 
 ---
 
