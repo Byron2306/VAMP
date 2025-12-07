@@ -65,12 +65,15 @@ except Exception as exc:  # pragma: no cover - optional dependency
 
 from . import BRAIN_DATA_DIR, STATE_DIR
 from .agent_app.app_state import agent_state
-from .attachments import AttachmentReader
+from .attachments import AttachmentReader, extract_text_from_attachment
+from .date_utils import MonthBounds, compute_month_bounds, parse_outlook_date
+from .onedrive_selectors import ONEDRIVE_SELECTORS
 from .outlook_selectors import (
     ATTACHMENT_CANDIDATES,
     ATTACHMENT_NAME_SELECTORS,
     BODY_SELECTORS,
     OUTLOOK_ROW_SELECTORS,
+    OUTLOOK_SELECTORS,
 )
 from .vamp_store import _uid
 from .nwu_brain.scoring import NWUScorer
@@ -180,14 +183,8 @@ SERVICE_URLS = {
 }
 
 SERVICE_LOGIN_READY = {
-    "outlook": [
-        "[data-test-id=\"message-list\"]",
-        "div[role=\"navigation\"][aria-label*='Mail']",
-    ],
-    "onedrive": [
-        "[data-automationid=\"TopBar\"]",
-        "[role=\"main\"] [data-automationid=\"Grid\"]",
-    ],
+    "outlook": OUTLOOK_SELECTORS.inbox_list,
+    "onedrive": ONEDRIVE_SELECTORS.grid,
     "drive": [
         "[aria-label=\"My Drive\"]",
         "[data-target=\"docos-DriveMain\"]",
@@ -1059,11 +1056,22 @@ def _parse_ts(ts_str: str) -> Optional[dt.datetime]:
 
     return dt.datetime.combine(base_date, time_value, tzinfo=now.tzinfo)
 
-def _in_month(ts: Optional[dt.datetime], month_bounds: Optional[Tuple[dt.date, dt.date]]) -> bool:
+def _in_month(ts: Optional[dt.datetime], month_bounds: Optional[object]) -> bool:
     if not ts or not month_bounds:
         return True
-    start, end = month_bounds
-    return start <= ts.date() < end
+
+    if isinstance(month_bounds, MonthBounds):
+        return month_bounds.start <= ts < month_bounds.end
+
+    try:
+        start, end = month_bounds  # type: ignore[misc]
+    except Exception:
+        return True
+
+    if isinstance(start, dt.datetime):
+        return start <= ts < end  # type: ignore[operator]
+
+    return start <= ts.date() < end  # type: ignore[operator]
 
 def _hash_from(source: str, path: str, timestamp: str = "") -> str:
     """Deterministic hash for dedup."""
@@ -1173,20 +1181,7 @@ async def _gather_outlook_attachments(page: Any, download_dir: Optional[Path] = 
             if handle_id:
                 seen_nodes.add(handle_id)
 
-            name = ""
-            for name_selector in ATTACHMENT_NAME_SELECTORS:
-                try:
-                    name = await _extract_element_text(node, name_selector)
-                except Exception:
-                    name = ""
-                if name:
-                    break
-
-            try:
-                href = await node.get_attribute("href")
-            except Exception:
-                href = None
-
+            name = await _query_with_fallbacks(node, ATTACHMENT_NAME_SELECTORS)
             if not name:
                 try:
                     aria = await node.get_attribute("aria-label")
@@ -1194,69 +1189,39 @@ async def _gather_outlook_attachments(page: Any, download_dir: Optional[Path] = 
                     aria = ""
                 name = _clean_text(aria)
 
-            if not name:
-                continue
+            try:
+                href = await node.get_attribute("href")
+            except Exception:
+                href = None
 
-            attachment_info: Dict[str, Any] = {
-                "name": name,
+            info: Dict[str, Any] = {
+                "name": name or "Attachment",
                 "href": href or "",
-                "opened": False,
-                "downloaded": False,
             }
 
-            download_path: Optional[Path] = None
             try:
-                async with page.expect_download(timeout=1500) as download_info:
-                    await node.click(timeout=1000)
-                download = await download_info.value
-                try:
-                    download_path = None
-                    if download_dir:
-                        suggested = download.suggested_filename or name
-                        download_path = Path(download_dir) / suggested
-                        await download.save_as(str(download_path))
-                    attachment_info["downloaded"] = True
-                    attachment_info["suggested_name"] = download.suggested_filename
-                finally:
-                    try:
-                        await download.cancel()
-                    except Exception:
-                        pass
-            except Exception:
-                try:
-                    async with page.expect_popup(timeout=1500) as popup_info:
-                        await node.click(timeout=1000)
-                    popup = await popup_info.value
-                    try:
-                        await popup.wait_for_load_state("domcontentloaded")
-                        attachment_info["opened"] = True
-                    finally:
-                        await popup.close()
-                except Exception:
-                    try:
-                        await node.click(timeout=1000)
-                        attachment_info["opened"] = True
-                    except Exception:
-                        logger.debug("Unable to activate Outlook attachment %s", name)
+                extraction = await extract_text_from_attachment(
+                    page,
+                    node,
+                    download_dir,
+                    reader=ATTACHMENT_READER,
+                )
+                info.update(extraction)
+            except Exception as exc:
+                logger.debug("Attachment extraction failed for %s: %s", name or "attachment", exc)
+                info.setdefault("read_error", f"Attachment could not be read: {exc}")
 
-            if download_path and download_path.exists():
-                text, meta = ATTACHMENT_READER.read(download_path)
-                if text:
-                    attachment_info["text"] = text
-                attachment_info.update(meta)
-                attachment_info["path"] = str(download_path)
+            if not info.get("text") and not info.get("read_error"):
+                info.setdefault("read_error", "Attachment could not be read")
 
-            if not attachment_info.get("text") and not attachment_info.get("read_error"):
-                attachment_info.setdefault("read_error", "Attachment could not be read")
-
-            attachments.append(attachment_info)
+            attachments.append(info)
 
     return attachments
 
 
 async def scrape_outlook(
     page: Any,
-    month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
+    month_bounds: Optional[object] = None,
     *,
     deep_read: bool = True,
     on_progress: Optional[Callable[[int, str], Any]] = None,
@@ -1265,6 +1230,7 @@ async def scrape_outlook(
     items: List[Dict[str, Any]] = []
     seen_hashes: set[str] = set()
     download_dir: Optional[Path] = None
+    now_ref = dt.datetime.now(dt.timezone.utc)
 
     if deep_read:
         try:
@@ -1274,6 +1240,12 @@ async def scrape_outlook(
 
     try:
         await page.wait_for_load_state("networkidle")
+        for inbox_selector in OUTLOOK_SELECTORS.inbox_list:
+            try:
+                await page.wait_for_selector(inbox_selector, timeout=12000)
+                break
+            except Exception:
+                continue
         await page.wait_for_selector('[role="listitem"], [role="option"]', timeout=20000)
     except Exception:
         logger.warning(
@@ -1345,54 +1317,24 @@ async def scrape_outlook(
                 pass
 
         meta: Dict[str, Any] = {}
+        subject = await _query_with_fallbacks(row, OUTLOOK_SELECTORS.message_subject)
+        sender = await _query_with_fallbacks(row, OUTLOOK_SELECTORS.message_sender)
+        preview = await _query_with_fallbacks(row, OUTLOOK_SELECTORS.message_preview)
+        ts_text = await _query_with_fallbacks(row, OUTLOOK_SELECTORS.message_date)
+        aria_label = ""
+        convo_id = ""
+        node_text = ""
+
         try:
             meta = await row.evaluate(
                 """
                 (node) => {
-                    const getText = (selectors) => {
-                        for (const sel of selectors) {
-                            const target = node.querySelector(sel);
-                            if (target && target.textContent) {
-                                return target.textContent.trim();
-                            }
-                        }
-                        return "";
-                    };
-
                     const attr = (name) => node.getAttribute(name) || "";
-
                     return {
-                        subject: getText([
-                            '[data-test-id="message-subject"]',
-                            '[role="heading"]',
-                            'span[title]',
-                            '.ms-ListItem-primaryText',
-                            '.KxTitle'
-                        ]),
-                        sender: getText([
-                            '[data-test-id="sender"]',
-                            'span[title][id*="sender"]',
-                            '.ms-Persona-primaryText',
-                            'span[aria-label*="From"]',
-                            '.KxFrom'
-                        ]),
-                        preview: getText([
-                            '[data-test-id="message-preview"]',
-                            '.messagePreview',
-                            '.ms-ListItem-tertiaryText',
-                            '.KxPreview'
-                        ]),
-                        when: getText([
-                            '[data-test-id="message-received"]',
-                            'time',
-                            'span[aria-label*="AM"]',
-                            'span[aria-label*="PM"]',
-                            'span[title*="202"]',
-                            'span[title*="20"]'
-                        ]) || attr('data-converteddatetime') || attr('data-timestamp'),
                         aria: attr('aria-label'),
                         convoId: attr('data-convid') || attr('data-conversation-id') || attr('data-conversationid') || attr('data-unique-id'),
-                        nodeText: node.innerText || ""
+                        nodeText: node.innerText || "",
+                        timestampAttr: attr('data-converteddatetime') || attr('data-timestamp')
                     };
                 }
                 """
@@ -1400,13 +1342,11 @@ async def scrape_outlook(
         except Exception as exc:
             logger.debug("Outlook row metadata evaluation failed: %s", exc)
 
-        subject = _clean_text(meta.get("subject")) if meta else ""
-        sender = _clean_text(meta.get("sender")) if meta else ""
-        preview = _clean_text(meta.get("preview")) if meta else ""
-        ts_text = _clean_text(meta.get("when")) if meta else ""
         aria_label = _clean_text(meta.get("aria")) if meta else ""
         convo_id = _clean_text(meta.get("convoId")) if meta else ""
         node_text = _clean_text(meta.get("nodeText")) if meta else ""
+        if not ts_text and meta:
+            ts_text = _clean_text(meta.get("timestampAttr"))
         if not node_text:
             try:
                 direct_text = await row.inner_text()
@@ -1436,7 +1376,12 @@ async def scrape_outlook(
         if not sender:
             sender = "(unknown sender)"
 
-        ts = _parse_ts(ts_text) if ts_text else None
+        ts = parse_outlook_date(ts_text, now_ref) if ts_text else None
+        if ts is None and ts_text:
+            ts = _parse_ts(ts_text)
+        if month_bounds and ts is None and ts_text:
+            logger.warning("Skipping Outlook email with unparseable timestamp '%s'", ts_text)
+            continue
 
         if on_progress:
             try:
@@ -1514,7 +1459,7 @@ async def scrape_outlook(
 
         body_text = _clean_text(body_text)
 
-        timestamp_value = ts.isoformat() if ts else _now_iso()
+        timestamp_value = ts.isoformat() if ts else now_ref.isoformat()
 
         confidence = 0.95
         relative_label = None
@@ -1553,6 +1498,7 @@ async def scrape_outlook(
         if ts is None:
             item["timestamp_estimated"] = True
 
+        attachments: List[Dict[str, Any]] = []
         if deep_read:
             try:
                 attachments = await _gather_outlook_attachments(page, download_dir=download_dir)
@@ -1560,14 +1506,23 @@ async def scrape_outlook(
                 logger.debug("Attachment collection failed for %s: %s", subject, exc)
                 attachments = []
 
-            if attachments:
-                item["attachments"] = attachments
+        if attachments:
+            item["attachments"] = attachments
+            item["attachments_present"] = True
+            item["attachment_names"] = [att.get("name") for att in attachments if att.get("name")]
+            if any(att.get("text") for att in attachments):
+                item["attachments_text_extracted"] = True
+            if any(att.get("read_error") for att in attachments):
+                note = "Attachment present but could not be read; possible evidence not fully captured."
+                item.setdefault("notes", note)
+        elif deep_read:
+            item["attachments_present"] = False
 
-            if on_progress:
-                try:
-                    await on_progress(35, f"Captured deep content for {subject[:64]}")
-                except Exception:
-                    pass
+        if deep_read and on_progress:
+            try:
+                await on_progress(35, f"Captured deep content for {subject[:64]}")
+            except Exception:
+                pass
 
         item_hash = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
         if item_hash in seen_hashes:
@@ -1585,24 +1540,45 @@ async def scrape_outlook(
 
     return items
 
-async def scrape_onedrive(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
+async def scrape_onedrive(page: Any, month_bounds: Optional[object] = None) -> List[Dict[str, Any]]:
     """OneDrive scraper with deep read and month filtering."""
-    items = []
+    items: List[Dict[str, Any]] = []
+
+    for grid_selector in ONEDRIVE_SELECTORS.grid:
+        try:
+            await page.wait_for_selector(grid_selector, timeout=12000)
+            break
+        except Exception:
+            continue
+
     await _soft_scroll(page, times=15)
 
-    rows = await page.query_selector_all('[role="row"]')
+    rows: List[Any] = []
+    for row_selector in ONEDRIVE_SELECTORS.row:
+        try:
+            rows = await page.query_selector_all(row_selector)
+        except Exception:
+            rows = []
+        if rows:
+            break
+
     for row in rows:
         try:
-            name = await _extract_element_text(row, '[data-automationid="name"]')
-            modified = await _extract_element_text(row, '[data-automationid="modified"]')
-            ts = _parse_ts(modified)
+            name = await _query_with_fallbacks(row, ONEDRIVE_SELECTORS.name)
+            modified = await _query_with_fallbacks(row, ONEDRIVE_SELECTORS.modified)
+            ts = parse_outlook_date(modified, dt.datetime.now(dt.timezone.utc)) if modified else None
+            if ts is None and modified:
+                ts = _parse_ts(modified)
+            if month_bounds and ts is None and modified:
+                logger.debug("Skipping OneDrive row with unparseable modified label '%s'", modified)
+                continue
             if not _in_month(ts, month_bounds):
                 continue
             item = {
                 "source": "onedrive",
-                "path": name,
+                "path": name or "(unknown file)",
                 "size": 0,
-                "timestamp": ts.isoformat() if ts else _now_iso()
+                "timestamp": ts.isoformat() if ts else _now_iso(),
             }
             item["hash"] = _hash_from(item["source"], item["path"], item.get("timestamp", ""))
             items.append(item)
@@ -1612,7 +1588,7 @@ async def scrape_onedrive(page: Any, month_bounds: Optional[Tuple[dt.date, dt.da
             continue
     return items
 
-async def scrape_drive(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
+async def scrape_drive(page: Any, month_bounds: Optional[object] = None) -> List[Dict[str, Any]]:
     """Google Drive scraper with deep read and month filtering."""
     items = []
     await _soft_scroll(page, times=15)
@@ -1639,7 +1615,7 @@ async def scrape_drive(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]
             continue
     return items
 
-async def scrape_efundi(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date]] = None) -> List[Dict[str, Any]]:
+async def scrape_efundi(page: Any, month_bounds: Optional[object] = None) -> List[Dict[str, Any]]:
     """eFundi scraper with month filtering."""
     items = []
     await _soft_scroll(page, times=10)
@@ -1695,7 +1671,7 @@ async def scrape_efundi(page: Any, month_bounds: Optional[Tuple[dt.date, dt.date
 async def run_scan_active(
     url: str,
     on_progress: Optional[Callable] = None,
-    month_bounds: Optional[Tuple[dt.date, dt.date]] = None,
+    month_bounds: Optional[object] = None,
     identity: Optional[str] = None,
     *,
     deep_read: bool = True,
@@ -1832,15 +1808,10 @@ async def run_scan_active_ws(email=None, year=None, month=None, url=None, deep_r
     try:
         if year and month:
             y, m = int(year), int(month)
-            first_day = dt.date(y, m, 1)
-            if m == 12:
-                last_day = dt.date(y + 1, 1, 1)
-            else:
-                last_day = dt.date(y, m + 1, 1)
-            month_bounds = (first_day, last_day)
+            month_bounds = compute_month_bounds(y, m, tzinfo=dt.timezone.utc)
         else:
             month_bounds = None
-    except:
+    except Exception:
         month_bounds = None
 
     if isinstance(deep_read, str):

@@ -45,3 +45,14 @@ Use the same `VAMP_AGENT_HOST` / `VAMP_AGENT_PORT` values if you need to overrid
 
 - **AI / Ollama:** Not required. If no local AI endpoint is running, the backend simply skips AI-assisted insights.
 - **Tesseract OCR:** Optional. When missing, the backend logs `"OCR fallback disabled: ..."` once at startup and continues without OCR support. Install Tesseract to enable OCR-based scraping.
+
+## Testing Outlook/OneDrive selectors
+
+After signing in once (so storage_state JSON files exist under `backend/state`), you can sanity-check the Playwright selectors with:
+
+```bash
+python tools/selector_smoke_test.py --service outlook
+python tools/selector_smoke_test.py --service onedrive
+```
+
+The script opens a page using the cached session, verifies that list/grid selectors resolve, and logs whether a sample row and attachment area are visible. Use this to quickly debug UI changes without running a full scan.
