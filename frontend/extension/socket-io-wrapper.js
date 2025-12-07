@@ -1,198 +1,128 @@
 /**
  * Socket.IO Wrapper for VAMP Extension
- * Provides compatibility between extension and Flask-SocketIO backend
+ * Provides a small class that wraps the bundled Socket.IO client and exposes
+ * a consistent interface for popup.js.
  */
 
-// Lazily load Socket.IO from the CDN and expose a ready promise. In the
-// original implementation we appended the <script> tag but immediately tried
-// to use the global `io`, which races on slower machines and produced the
-// "io is not defined" error seen in the activity log. By keeping an explicit
-// promise we guarantee that any connection attempt waits for the library to be
-// present before creating the socket instance.
-let ioReadyPromise = null;
+let socketIoPromise = null;
 
-function ensureSocketIOLoaded() {
+function loadSocketIo() {
   if (typeof io !== 'undefined') {
     return Promise.resolve(io);
   }
 
-  if (ioReadyPromise) {
-    return ioReadyPromise;
-  }
-
-  ioReadyPromise = new Promise((resolve, reject) => {
-    const existing = document.querySelector('script[data-socket-io="client"]');
-    if (existing) {
-      const finalize = () => {
-        if (typeof io !== 'undefined') {
+  if (!socketIoPromise) {
+    socketIoPromise = new Promise((resolve, reject) => {
+      const existing = document.querySelector('script[data-socket-io="client"]');
+      if (existing) {
+        existing.addEventListener('load', () => resolve(typeof io !== 'undefined' ? io : null));
+        existing.addEventListener('error', (event) => reject(new Error(`Failed to load Socket.IO: ${event?.message || 'error'}`)));
+        if (existing.dataset.loaded === 'true' && typeof io !== 'undefined') {
           resolve(io);
-        } else {
-          reject(new Error('Socket.IO script loaded but `io` is unavailable'));
         }
-      };
-
-      if (existing.dataset.loaded === 'true') {
-        finalize();
         return;
       }
 
-      existing.addEventListener('load', finalize);
-      existing.addEventListener('error', (event) => {
-        reject(new Error(`Failed to load Socket.IO: ${event?.message || 'error'}`));
-      });
-      return;
-    }
+      const script = document.createElement('script');
+      script.dataset.socketIo = 'client';
+      script.async = true;
+      script.src = chrome.runtime?.getURL ? chrome.runtime.getURL('vendor/socket.io.min.js') : 'vendor/socket.io.min.js';
+      script.onload = () => {
+        script.dataset.loaded = 'true';
+        if (typeof io !== 'undefined') {
+          resolve(io);
+        } else {
+          reject(new Error('Socket.IO failed to initialise correctly'));
+        }
+      };
+      script.onerror = (event) => reject(new Error(`Failed to load Socket.IO: ${event?.message || 'error'}`));
+      document.head.appendChild(script);
+    });
+  }
 
-    const script = document.createElement('script');
-    const socketIoUrl = (typeof chrome !== 'undefined' && chrome.runtime?.getURL)
-      ? chrome.runtime.getURL('vendor/socket.io.min.js')
-      : 'vendor/socket.io.min.js';
-    script.src = socketIoUrl;
-    script.async = true;
-    script.dataset.socketIo = 'client';
-    script.onload = () => {
-      script.dataset.loaded = 'true';
-      if (typeof io !== 'undefined') {
-        resolve(io);
-      } else {
-        reject(new Error('Socket.IO failed to initialise correctly'));
-      }
-    };
-    script.onerror = (event) => {
-      reject(new Error(`Failed to load Socket.IO: ${event?.message || 'error'}`));
-    };
-    document.head.appendChild(script);
+  return socketIoPromise.then((client) => {
+    if (!client) throw new Error('Socket.IO client unavailable');
+    return client;
   });
-
-  return ioReadyPromise;
 }
 
-// Create Socket.IO connection manager
-const SocketIOManager = (() => {
-  let socket = null;
-  const listeners = {};
+class SocketIOManager {
+  constructor() {
+    this.socket = null;
+    this.listeners = new Map();
+  }
 
-  return {
-    connect(url) {
-      return new Promise((resolve, reject) => {
-        if (socket && socket.connected) {
-          resolve(socket);
-          return;
-        }
-        ensureSocketIOLoaded()
-          .then(() => {
-            try {
-              socket = io(url, {
-                reconnection: true,
-                reconnectionDelay: 1000,
-                reconnectionDelayMax: 5000,
-                reconnectionAttempts: Infinity,
-                transports: ['websocket', 'polling']
-              });
+  async connect(baseUrl) {
+    const ioClient = await loadSocketIo();
 
-              socket.on('connect', () => {
-                console.log('[SocketIO] Connected to', url);
-                if (listeners['connect']) {
-                  listeners['connect'].forEach(cb => cb({ type: 'open' }));
-                }
-                resolve(socket);
-              });
-
-              socket.on('disconnect', (reason) => {
-                console.log('[SocketIO] Disconnected - Reason:', reason);
-                if (listeners['disconnect']) {
-                  listeners['disconnect'].forEach(cb => cb({
-                    type: 'close',
-                    code: reason === 'io server disconnect' ? 1000 : 1006,
-                    reason: reason
-                  }));
-                }
-              });
-
-              socket.on('error', (error) => {
-                console.error('[SocketIO] Error:', error);
-                if (listeners['error']) {
-                  listeners['error'].forEach(cb => cb({
-                    type: 'error',
-                    message: error
-                  }));
-                }
-                // Don't reject here - let the connection retry
-              });
-
-              socket.on('message', (data) => {
-                if (listeners['message']) {
-                  listeners['message'].forEach(cb => cb({
-                    data: typeof data === 'string' ? data : JSON.stringify(data)
-                  }));
-                }
-              });
-
-              // Handle generic events that might be emitted as messages
-              socket.onAny((event, data) => {
-                console.log('[SocketIO] Event received:', event, data);
-                if (event !== 'connect' && event !== 'disconnect' && event !== 'error') {
-                  if (listeners['message']) {
-                    listeners['message'].forEach(cb => cb({
-                      data: JSON.stringify({
-                        action: event,
-                        ...data
-                      })
-                    }));
-                  }
-                }
-              });
-
-            } catch (error) {
-              console.error('[SocketIO] Connection error:', error);
-              reject(error);
-            }
-          })
-          .catch((error) => {
-            console.error('[SocketIO] Failed to load client library:', error);
-            reject(error);
-          });
-      });
-    },
-
-    disconnect() {
-      if (socket) {
-        socket.disconnect();
-        socket = null;
-      }
-    },
-
-    send(data) {
-      if (!socket || !socket.connected) {
-        console.warn('[SocketIO] Not connected - cannot send data');
-        return false;
-      }
-      try {
-        // Convert to object if string
-        const payload = typeof data === 'string' ? JSON.parse(data) : data;
-        
-        // Emit as generic message with action embedded
-        const action = payload.action || 'message';
-        console.log('[SocketIO] Sending action:', action);
-        socket.emit('message', payload);
-        return true;
-      } catch (error) {
-        console.error('[SocketIO] Send error:', error);
-        return false;
-      }
-    },
-
-    on(event, callback) {
-      if (!listeners[event]) {
-        listeners[event] = [];
-      }
-      listeners[event].push(callback);
-    },
-
-    isConnected() {
-      return socket && socket.connected;
+    if (this.socket?.connected && this.socket.io?.uri?.startsWith(baseUrl)) {
+      return this.socket;
     }
-  };
-})();
 
-window.SocketIOManager = SocketIOManager;
+    this.disconnect();
+    this.socket = ioClient(baseUrl, {
+      reconnection: true,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      reconnectionAttempts: Infinity,
+      transports: ['websocket', 'polling']
+    });
+
+    this.socket.on('connect', () => this.emitLocal('connect'));
+    this.socket.on('disconnect', (reason) => this.emitLocal('disconnect', { reason }));
+    this.socket.on('error', (error) => this.emitLocal('error', { message: error?.message || error }));
+    this.socket.onAny((event, data) => {
+      if (event === 'connect' || event === 'disconnect' || event === 'error') return;
+      this.emitLocal('message', { data: typeof data === 'string' ? data : JSON.stringify({ action: event, ...data }) });
+    });
+
+    return this.socket;
+  }
+
+  disconnect() {
+    try {
+      this.socket?.removeAllListeners?.();
+      this.socket?.disconnect?.();
+    } catch (_) {
+      // ignore
+    }
+    this.socket = null;
+  }
+
+  send(obj) {
+    if (!this.socket || !this.socket.connected) {
+      return false;
+    }
+    try {
+      const payload = typeof obj === 'string' ? JSON.parse(obj) : obj;
+      const action = payload?.action || 'message';
+      this.socket.emit('message', payload);
+      this.emitLocal('message', { data: JSON.stringify({ action, ...payload }) });
+      return true;
+    } catch (err) {
+      console.error('[SocketIO] Send error:', err);
+      return false;
+    }
+  }
+
+  on(event, callback) {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event).add(callback);
+  }
+
+  emitLocal(event, payload = {}) {
+    const callbacks = this.listeners.get(event);
+    if (!callbacks) return;
+    callbacks.forEach((cb) => {
+      try { cb(payload); } catch (err) { console.warn('[SocketIO] Listener error', err); }
+    });
+  }
+
+  isConnected() {
+    return Boolean(this.socket?.connected);
+  }
+}
+
+window.SocketIOManager = new SocketIOManager();
