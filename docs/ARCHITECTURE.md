@@ -11,10 +11,9 @@ The Chrome extension must use the Flask + Socket.IO server defined in `backend/a
 
 ## Frontend components
 - **Chrome extension** (`frontend/extension`):
-  - `manifest.json` pins defaults to `http://127.0.0.1:8080/api` and `http://127.0.0.1:8080` for REST and Socket.IO, respectively.【F:frontend/extension/manifest.json†L8-L78】
-  - `service-worker.js` is responsible for alarms, notifications, evidence storage helpers, and offscreen audio. WebSocket ownership lives exclusively in the popup so there is no duplicate background connection.【F:frontend/extension/service-worker.js†L1-L112】
-  - `popup.js` renders the UI and owns the Socket.IO connection via `socket-io-wrapper.js`; it sends actions such as ENROL, GET_STATE, SCAN_ACTIVE, ASK, FINALISE_MONTH, EXPORT_MONTH, and COMPILE_YEAR over Socket.IO.【F:frontend/extension/popup.js†L930-L980】【F:frontend/extension/popup.js†L1071-L1395】
-  - `socket-io-wrapper.js` lazy-loads the Socket.IO client and exposes a `SocketIOManager` used by `popup.js` for connect/disconnect/send/on/isConnected operations.【F:frontend/extension/socket-io-wrapper.js†L1-L116】
+  - `manifest.json` pins defaults to `http://127.0.0.1:8080/api` and `http://127.0.0.1:8080` for REST and Socket.IO, respectively.【F:frontend/extension/manifest.json†L8-L84】
+  - `service-worker.js` is responsible for alarms, notifications, evidence storage helpers, offscreen audio, and the single shared Socket.IO connection used by the popup.【F:frontend/extension/service-worker.js†L1-L157】
+  - `popup.js` renders the UI and delegates Socket.IO connectivity through the service worker bridge while dispatching actions such as ENROL, GET_STATE, SCAN_ACTIVE, ASK, FINALISE_MONTH, EXPORT_MONTH, and COMPILE_YEAR.【F:frontend/extension/popup.js†L760-L917】【F:frontend/extension/popup.js†L1242-L1421】
 - **Dashboard** (`frontend/dashboard`): Static status UI (index.html + styles.css + app.js) served by `app_server.py` root. It defaults to `http://localhost:8080/api` for health and connector calls.【F:frontend/dashboard/app.js†L1-L44】【F:backend/app_server.py†L17-L48】
 
 ## Data and evidence storage

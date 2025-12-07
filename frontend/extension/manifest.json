@@ -10,6 +10,10 @@
     "wsBaseUrl": "http://127.0.0.1:8080"
   },
 
+  "vamp_defaults": {
+    "wsUrl": "http://127.0.0.1:8080"
+  },
+
   "icons": {
     "16": "icons/icon128.png",
     "32": "icons/icon128.png",

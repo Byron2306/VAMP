@@ -1,6 +1,16 @@
 """Legacy plain WebSocket bridge that reuses the Socket.IO action handlers."""
 from __future__ import annotations
 
+"""
+Legacy plain WebSocket bridge.
+
+The Chrome extension and dashboard now speak Socket.IO to
+``backend.app_server`` on port 8080. This module is retained only as an
+optional compatibility shim for older dashboards or debugging scenarios.
+Enable it via ``START_WS_BRIDGE=1`` when running ``scripts/setup_backend.bat``;
+it is not part of the default startup path.
+"""
+
 import asyncio
 import json
 from typing import Any, Dict
